@@ -58,6 +58,7 @@ Only normalized non-PII fields are allowed.
   - Event Grid/Azure Functions oriented collector
 - `apps/openai-sync`
   - Usage/Costs API sync worker
+  - Includes an HTTP server for demo and integration validation
 
 ## Local testing
 
@@ -94,3 +95,22 @@ Provider-specific helpers:
 - GCP: `deploy/gcp/cloudrun-service.yaml`
 - Azure: `deploy/azure/functionapp.bicep`
 - OpenAI: `deploy/openai/Dockerfile`
+
+## Render demo deployment
+
+Each provider collector can be deployed as its own Render Docker web service using:
+
+- repo root: `/`
+- docker context: `.`
+- dockerfile path:
+  - AWS: `./apps/aws/Dockerfile`
+  - GCP: `./apps/gcp/Dockerfile`
+  - Azure: `./apps/azure/Dockerfile`
+  - OpenAI: `./apps/openai-sync/Dockerfile`
+
+Required env vars for the Render demos:
+
+- `CLOUDSIGHT_BASE_URL`
+- `CLOUDSIGHT_API_KEY`
+- `COLLECTOR_NAME`
+- `COLLECTOR_ENVIRONMENT`
