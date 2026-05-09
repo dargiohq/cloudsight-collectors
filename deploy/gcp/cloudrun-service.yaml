@@ -1,0 +1,23 @@
+apiVersion: serving.knative.dev/v1
+kind: Service
+metadata:
+  name: cloudsight-gcp-collector
+spec:
+  template:
+    spec:
+      containers:
+        - image: REGION-docker.pkg.dev/PROJECT/cloudsight/cloudsight-gcp-collector:latest
+          env:
+            - name: PORT
+              value: "9094"
+            - name: CLOUDSIGHT_BASE_URL
+              value: "https://dargio-cloudsight-backend.onrender.com"
+            - name: CLOUDSIGHT_API_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: cloudsight-api-key
+                  key: latest
+            - name: COLLECTOR_NAME
+              value: "gcp-collector"
+            - name: COLLECTOR_ENVIRONMENT
+              value: "Production"

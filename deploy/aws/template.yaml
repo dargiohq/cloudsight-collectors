@@ -1,0 +1,34 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Transform: AWS::Serverless-2016-10-31
+Description: CloudSight AWS collector
+
+Parameters:
+  CloudSightBaseUrl:
+    Type: String
+  CloudSightApiKey:
+    Type: String
+  CollectorName:
+    Type: String
+    Default: aws-collector
+
+Resources:
+  CloudSightAwsCollector:
+    Type: AWS::Serverless::Function
+    Properties:
+      Runtime: nodejs20.x
+      Handler: apps/aws/handler.handler
+      CodeUri: ../../
+      Timeout: 30
+      MemorySize: 256
+      Environment:
+        Variables:
+          CLOUDSIGHT_BASE_URL: !Ref CloudSightBaseUrl
+          CLOUDSIGHT_API_KEY: !Ref CloudSightApiKey
+          COLLECTOR_NAME: !Ref CollectorName
+          COLLECTOR_ENVIRONMENT: Production
+      Policies:
+        - AWSLambdaBasicExecutionRole
+
+Outputs:
+  CollectorFunctionName:
+    Value: !Ref CloudSightAwsCollector
