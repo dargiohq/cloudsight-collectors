@@ -10,12 +10,16 @@ function required(name, value) {
 export async function postCollectorBatch({
   baseUrl = process.env.CLOUDSIGHT_BASE_URL,
   apiKey = process.env.CLOUDSIGHT_API_KEY,
+  collectorId = process.env.CLOUDSIGHT_COLLECTOR_ID,
+  collectorKey = process.env.CLOUDSIGHT_COLLECTOR_KEY,
   collectorName,
   batch,
   dryRun = false
 }) {
   required("CLOUDSIGHT_BASE_URL", baseUrl);
-  required("CLOUDSIGHT_API_KEY", apiKey);
+  if (!collectorId || !collectorKey) {
+    required("CLOUDSIGHT_API_KEY", apiKey);
+  }
   const normalizedBatch = buildCollectorBatch({
     ...batch,
     collectorName: collectorName || batch.collectorName
@@ -25,6 +29,7 @@ export async function postCollectorBatch({
     return {
       status: "DRY_RUN",
       endpoint: `${baseUrl.replace(/\/$/, "")}/api/collector/events`,
+      authMode: collectorId && collectorKey ? "COLLECTOR_KEY" : "WORKSPACE_API_KEY",
       batch: normalizedBatch
     };
   }
@@ -33,7 +38,9 @@ export async function postCollectorBatch({
     method: "POST",
     headers: {
       "Content-Type": "application/json",
-      "X-API-KEY": apiKey,
+      ...(apiKey ? { "X-API-KEY": apiKey } : {}),
+      ...(collectorId ? { "X-COLLECTOR-ID": collectorId } : {}),
+      ...(collectorKey ? { "X-COLLECTOR-KEY": collectorKey } : {}),
       "X-COLLECTOR-NAME": normalizedBatch.collectorName
     },
     body: JSON.stringify(normalizedBatch)

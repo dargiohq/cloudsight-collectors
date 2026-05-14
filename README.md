@@ -14,8 +14,11 @@ Collectors forward batches to:
 
 - `POST /api/collector/events`
 - headers:
-  - `X-API-KEY`
+  - `X-COLLECTOR-ID`
+  - `X-COLLECTOR-KEY`
   - `X-COLLECTOR-NAME`
+
+Collector-specific credentials are now the recommended path. Keep `X-API-KEY` only as the optional fallback for direct/manual ingestion or unsupported workloads.
 
 Batch shape:
 
@@ -111,6 +114,11 @@ Each provider collector can be deployed as its own Render Docker web service usi
 Required env vars for the Render demos:
 
 - `CLOUDSIGHT_BASE_URL`
-- `CLOUDSIGHT_API_KEY`
+- `CLOUDSIGHT_COLLECTOR_ID`
+- `CLOUDSIGHT_COLLECTOR_KEY`
 - `COLLECTOR_NAME`
 - `COLLECTOR_ENVIRONMENT`
+
+Optional fallback env var:
+
+- `CLOUDSIGHT_API_KEY`
