@@ -34,22 +34,60 @@ export async function postCollectorBatch({
     };
   }
 
-  const response = await fetch(`${baseUrl.replace(/\/$/, "")}/api/collector/events`, {
-    method: "POST",
-    headers: {
-      "Content-Type": "application/json",
-      ...(apiKey ? { "X-API-KEY": apiKey } : {}),
-      ...(collectorId ? { "X-COLLECTOR-ID": collectorId } : {}),
-      ...(collectorKey ? { "X-COLLECTOR-KEY": collectorKey } : {}),
-      "X-COLLECTOR-NAME": normalizedBatch.collectorName
-    },
-    body: JSON.stringify(normalizedBatch)
-  });
+  let lastFailure;
+  for (let attempt = 1; attempt <= 4; attempt += 1) {
+    const response = await fetch(`${baseUrl.replace(/\/$/, "")}/api/collector/events`, {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        ...(apiKey ? { "X-API-KEY": apiKey } : {}),
+        ...(collectorId ? { "X-COLLECTOR-ID": collectorId } : {}),
+        ...(collectorKey ? { "X-COLLECTOR-KEY": collectorKey } : {}),
+        "X-COLLECTOR-NAME": normalizedBatch.collectorName
+      },
+      body: JSON.stringify(normalizedBatch)
+    });
 
-  const text = await response.text();
-  const payload = text ? JSON.parse(text) : {};
-  if (!response.ok) {
-    throw new Error(`CloudSight collector ingestion failed: ${response.status} ${JSON.stringify(payload)}`);
+    const text = await response.text();
+    const payload = safeJson(text);
+    if (response.ok) {
+      return payload;
+    }
+
+    lastFailure = new Error(`CloudSight collector ingestion failed: ${response.status} ${renderPayload(payload, text)}`);
+    if (!shouldRetry(response.status, text) || attempt === 4) {
+      throw lastFailure;
+    }
+    await sleep(attempt * 2500);
   }
-  return payload;
+
+  throw lastFailure ?? new Error("CloudSight collector ingestion failed");
+}
+
+function safeJson(text) {
+  if (!text) {
+    return {};
+  }
+  try {
+    return JSON.parse(text);
+  } catch {
+    return {
+      rawText: text.trim()
+    };
+  }
+}
+
+function renderPayload(payload, rawText) {
+  if (payload && typeof payload === "object" && Object.keys(payload).length > 0) {
+    return JSON.stringify(payload);
+  }
+  return JSON.stringify({ rawText: rawText?.trim?.() ?? "" });
+}
+
+function shouldRetry(status, text) {
+  return status === 429 || /too many requests/i.test(text || "");
+}
+
+function sleep(ms) {
+  return new Promise(resolve => setTimeout(resolve, ms));
 }
