@@ -20,3 +20,15 @@ test("maps AWS S3 records into a CloudSight batch", () => {
   assert.equal(batch.events[0].inputEndpoint, "s3-put");
   assert.equal(batch.events[0].outputEndpoint, "s3-get");
 });
+
+test("maps AWS queue summaries into a CloudSight batch", () => {
+  const batch = mapAwsPayloadToBatch({
+    metricType: "queueing-summary",
+    sqsRequests: 1200000,
+    snsPublishes: 340000,
+    timestamp: "2026-05-09T10:00:00Z"
+  }, { collectorName: "aws-prod-collector", environment: "Production" });
+
+  assert.equal(batch.events[0].inputEndpoint, "sqs-request");
+  assert.equal(batch.events[0].outputEndpoint, "sns-publish-request");
+});

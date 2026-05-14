@@ -72,6 +72,20 @@ function metricSummaryToEvent(payload, context) {
         deploymentEnvironment: context.environment,
         tags: { serviceFamily: "API Gateway", environment: context.environment || "" }
       });
+    case "ec2-ebs-summary":
+      return buildCollectorEvent({
+        service: "AWS",
+        inputEndpoint: "ec2-core-hour",
+        outputEndpoint: "ebs-gp3-gb-month",
+        inputUnits: Number(payload.coreHours || 0),
+        outputUnits: Number(payload.gp3GbMonth || 0),
+        timestamp,
+        sourceType: "CLOUDWATCH_METRIC",
+        sourceReference: "ec2-ebs-summary",
+        regionCode,
+        deploymentEnvironment: context.environment,
+        tags: { serviceFamily: "EC2/EBS", environment: context.environment || "" }
+      });
     case "dynamodb-summary":
       return buildCollectorEvent({
         service: "AWS",
@@ -113,6 +127,20 @@ function metricSummaryToEvent(payload, context) {
         regionCode,
         deploymentEnvironment: context.environment,
         tags: { serviceFamily: "RDS", environment: context.environment || "" }
+      });
+    case "queueing-summary":
+      return buildCollectorEvent({
+        service: "AWS",
+        inputEndpoint: "sqs-request",
+        outputEndpoint: "sns-publish-request",
+        inputUnits: Number(payload.sqsRequests || 0),
+        outputUnits: Number(payload.snsPublishes || 0),
+        timestamp,
+        sourceType: "CLOUDWATCH_METRIC",
+        sourceReference: "queueing-summary",
+        regionCode,
+        deploymentEnvironment: context.environment,
+        tags: { serviceFamily: "SQS/SNS", environment: context.environment || "" }
       });
     default:
       throw new Error(`Unsupported AWS metricType: ${payload.metricType}`);

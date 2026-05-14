@@ -36,6 +36,54 @@ function cloudRunMetricEvent(payload, context) {
   });
 }
 
+function geminiMetricEvent(payload, context) {
+  return buildCollectorEvent({
+    service: "GCP",
+    inputEndpoint: "gemini-input",
+    outputEndpoint: "gemini-output",
+    inputUnits: Number(payload.inputTokens || 0),
+    outputUnits: Number(payload.outputTokens || 0),
+    timestamp: payload.timestamp || new Date().toISOString(),
+    sourceType: "MODEL_USAGE",
+    sourceReference: payload.model || "gemini-summary",
+    regionCode: payload.regionCode || context.regionCode,
+    deploymentEnvironment: context.environment,
+    tags: { serviceFamily: "Gemini", environment: context.environment || "" }
+  });
+}
+
+function visionMetricEvent(payload, context) {
+  return buildCollectorEvent({
+    service: "GCP",
+    inputEndpoint: "vision-object-detection-minute",
+    outputEndpoint: "vision-warehouse-search-request",
+    inputUnits: Number(payload.objectDetectionMinutes || 0),
+    outputUnits: Number(payload.searchRequests || 0),
+    timestamp: payload.timestamp || new Date().toISOString(),
+    sourceType: "MODEL_USAGE",
+    sourceReference: "vision-summary",
+    regionCode: payload.regionCode || context.regionCode,
+    deploymentEnvironment: context.environment,
+    tags: { serviceFamily: "Vision", environment: context.environment || "" }
+  });
+}
+
+function gkeRuntimeEvent(payload, context) {
+  return buildCollectorEvent({
+    service: "GCP",
+    inputEndpoint: "cloud-run-memory-gib-second",
+    outputEndpoint: "gke-cluster-hour",
+    inputUnits: Number(payload.memoryGibSeconds || 0),
+    outputUnits: Number(payload.clusterHours || 0),
+    timestamp: payload.timestamp || new Date().toISOString(),
+    sourceType: "METRIC_PULL",
+    sourceReference: "gke-runtime-summary",
+    regionCode: payload.regionCode || context.regionCode,
+    deploymentEnvironment: context.environment,
+    tags: { serviceFamily: "GKE/Runtime", environment: context.environment || "" }
+  });
+}
+
 function bigQueryJobEvent(payload, context) {
   return buildCollectorEvent({
     service: "GCP",
@@ -72,8 +120,14 @@ export function mapGcpPayloadToBatch(payload, context = {}) {
   let events = [];
   if (payload?.protoPayload?.serviceName?.includes("storage.googleapis.com")) {
     events = [storageAuditEvent(payload, context)];
+  } else if (payload?.metricType === "gemini-summary") {
+    events = [geminiMetricEvent(payload, context)];
+  } else if (payload?.metricType === "vision-summary") {
+    events = [visionMetricEvent(payload, context)];
   } else if (payload?.metricType === "cloud-run-summary") {
     events = [cloudRunMetricEvent(payload, context)];
+  } else if (payload?.metricType === "gke-runtime-summary") {
+    events = [gkeRuntimeEvent(payload, context)];
   } else if (payload?.metricType === "bigquery-job") {
     events = [bigQueryJobEvent(payload, context)];
   } else if (payload?.metricType === "pubsub-summary") {
