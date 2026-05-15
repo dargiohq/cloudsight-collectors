@@ -36,6 +36,7 @@ export async function postCollectorBatch({
 
   let lastFailure;
   for (let attempt = 1; attempt <= 4; attempt += 1) {
+    const usingSignedCollector = Boolean(collectorId && collectorKey);
     const response = await fetch(`${baseUrl.replace(/\/$/, "")}/api/collector/events`, {
       method: "POST",
       headers: {
@@ -43,7 +44,9 @@ export async function postCollectorBatch({
         ...(apiKey ? { "X-API-KEY": apiKey } : {}),
         ...(collectorId ? { "X-COLLECTOR-ID": collectorId } : {}),
         ...(collectorKey ? { "X-COLLECTOR-KEY": collectorKey } : {}),
-        "X-COLLECTOR-NAME": normalizedBatch.collectorName
+        ...(!usingSignedCollector && normalizedBatch.collectorName
+          ? { "X-COLLECTOR-NAME": normalizedBatch.collectorName }
+          : {})
       },
       body: JSON.stringify(normalizedBatch)
     });
