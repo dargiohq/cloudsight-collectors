@@ -35,7 +35,8 @@ export async function postCollectorBatch({
   }
 
   let lastFailure;
-  for (let attempt = 1; attempt <= 4; attempt += 1) {
+  let lastPayload;
+  for (let attempt = 1; attempt <= 6; attempt += 1) {
     const usingSignedCollector = Boolean(collectorId && collectorKey);
     const response = await fetch(`${baseUrl.replace(/\/$/, "")}/api/collector/events`, {
       method: "POST",
@@ -53,18 +54,37 @@ export async function postCollectorBatch({
 
     const text = await response.text();
     const payload = safeJson(text);
+    lastPayload = payload;
     if (response.ok) {
-      return payload;
+      return {
+        status: "SUCCESS",
+        endpoint: `${baseUrl.replace(/\/$/, "")}/api/collector/events`,
+        attempts: attempt,
+        response: payload
+      };
     }
 
     lastFailure = new Error(`CloudSight collector ingestion failed: ${response.status} ${renderPayload(payload, text)}`);
-    if (!shouldRetry(response.status, text) || attempt === 4) {
-      throw lastFailure;
+    if (!shouldRetry(response.status, text) || attempt === 6) {
+      return {
+        status: shouldRetry(response.status, text) ? "RATE_LIMITED" : "ERROR",
+        endpoint: `${baseUrl.replace(/\/$/, "")}/api/collector/events`,
+        attempts: attempt,
+        httpStatus: response.status,
+        error: lastFailure.message,
+        response: payload
+      };
     }
-    await sleep(attempt * 2500);
+    await sleep(attempt * 3000);
   }
 
-  throw lastFailure ?? new Error("CloudSight collector ingestion failed");
+  return {
+    status: "ERROR",
+    endpoint: `${baseUrl.replace(/\/$/, "")}/api/collector/events`,
+    attempts: 6,
+    error: lastFailure?.message ?? "CloudSight collector ingestion failed",
+    response: lastPayload ?? {}
+  };
 }
 
 function safeJson(text) {
