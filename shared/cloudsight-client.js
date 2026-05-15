@@ -1,5 +1,8 @@
 import { buildCollectorBatch } from "./contract.js";
 
+let dispatchQueue = Promise.resolve();
+let nextDispatchAt = 0;
+
 function required(name, value) {
   if (!value) {
     throw new Error(`${name} is required`);
@@ -34,57 +37,106 @@ export async function postCollectorBatch({
     };
   }
 
+  return enqueueDispatch(() => performCollectorPost({
+    baseUrl,
+    apiKey,
+    collectorId,
+    collectorKey,
+    normalizedBatch
+  }));
+}
+
+async function performCollectorPost({
+  baseUrl,
+  apiKey,
+  collectorId,
+  collectorKey,
+  normalizedBatch
+}) {
+  const endpoint = `${baseUrl.replace(/\/$/, "")}/api/collector/events`;
+  const maxAttempts = Number(process.env.CLOUDSIGHT_DISPATCH_ATTEMPTS || 10);
   let lastFailure;
   let lastPayload;
-  for (let attempt = 1; attempt <= 6; attempt += 1) {
+  for (let attempt = 1; attempt <= maxAttempts; attempt += 1) {
     const usingSignedCollector = Boolean(collectorId && collectorKey);
-    const response = await fetch(`${baseUrl.replace(/\/$/, "")}/api/collector/events`, {
-      method: "POST",
-      headers: {
-        "Content-Type": "application/json",
-        ...(apiKey ? { "X-API-KEY": apiKey } : {}),
-        ...(collectorId ? { "X-COLLECTOR-ID": collectorId } : {}),
-        ...(collectorKey ? { "X-COLLECTOR-KEY": collectorKey } : {}),
-        ...(!usingSignedCollector && normalizedBatch.collectorName
-          ? { "X-COLLECTOR-NAME": normalizedBatch.collectorName }
-          : {})
-      },
-      body: JSON.stringify(normalizedBatch)
-    });
+    try {
+      const response = await fetch(endpoint, {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          ...(apiKey ? { "X-API-KEY": apiKey } : {}),
+          ...(collectorId ? { "X-COLLECTOR-ID": collectorId } : {}),
+          ...(collectorKey ? { "X-COLLECTOR-KEY": collectorKey } : {}),
+          ...(!usingSignedCollector && normalizedBatch.collectorName
+            ? { "X-COLLECTOR-NAME": normalizedBatch.collectorName }
+            : {})
+        },
+        body: JSON.stringify(normalizedBatch)
+      });
 
-    const text = await response.text();
-    const payload = safeJson(text);
-    lastPayload = payload;
-    if (response.ok) {
-      return {
-        status: "SUCCESS",
-        endpoint: `${baseUrl.replace(/\/$/, "")}/api/collector/events`,
-        attempts: attempt,
-        response: payload
-      };
-    }
+      const text = await response.text();
+      const payload = safeJson(text);
+      lastPayload = payload;
+      if (response.ok) {
+        return {
+          status: "SUCCESS",
+          endpoint,
+          attempts: attempt,
+          response: payload
+        };
+      }
 
-    lastFailure = new Error(`CloudSight collector ingestion failed: ${response.status} ${renderPayload(payload, text)}`);
-    if (!shouldRetry(response.status, text) || attempt === 6) {
-      return {
-        status: shouldRetry(response.status, text) ? "RATE_LIMITED" : "ERROR",
-        endpoint: `${baseUrl.replace(/\/$/, "")}/api/collector/events`,
-        attempts: attempt,
-        httpStatus: response.status,
-        error: lastFailure.message,
-        response: payload
-      };
+      lastFailure = new Error(`CloudSight collector ingestion failed: ${response.status} ${renderPayload(payload, text)}`);
+      if (!shouldRetry(response.status, text) || attempt === maxAttempts) {
+        return {
+          status: shouldRetry(response.status, text) ? "RATE_LIMITED" : "ERROR",
+          endpoint,
+          attempts: attempt,
+          httpStatus: response.status,
+          error: lastFailure.message,
+          response: payload
+        };
+      }
+
+      await sleep(retryDelayMs(attempt, response.headers.get("retry-after")));
+    } catch (error) {
+      lastFailure = error instanceof Error ? error : new Error(String(error));
+      if (!shouldRetryNetworkError(lastFailure) || attempt === maxAttempts) {
+        return {
+          status: "ERROR",
+          endpoint,
+          attempts: attempt,
+          error: lastFailure.message,
+          response: lastPayload ?? {}
+        };
+      }
+      await sleep(retryDelayMs(attempt));
     }
-    await sleep(attempt * 3000);
   }
 
   return {
     status: "ERROR",
-    endpoint: `${baseUrl.replace(/\/$/, "")}/api/collector/events`,
-    attempts: 6,
+    endpoint,
+    attempts: maxAttempts,
     error: lastFailure?.message ?? "CloudSight collector ingestion failed",
     response: lastPayload ?? {}
   };
+}
+
+function enqueueDispatch(task) {
+  const scheduled = dispatchQueue
+    .catch(() => undefined)
+    .then(async () => {
+      const waitMs = Math.max(0, nextDispatchAt - Date.now());
+      if (waitMs > 0) {
+        await sleep(waitMs);
+      }
+      const result = await task();
+      nextDispatchAt = Date.now() + minimumDispatchGapMs();
+      return result;
+    });
+  dispatchQueue = scheduled.catch(() => undefined);
+  return scheduled;
 }
 
 function safeJson(text) {
@@ -108,7 +160,31 @@ function renderPayload(payload, rawText) {
 }
 
 function shouldRetry(status, text) {
-  return status === 429 || /too many requests/i.test(text || "");
+  return status === 429
+    || status === 502
+    || status === 503
+    || status === 504
+    || /too many requests|bad gateway|service unavailable|gateway timeout/i.test(text || "");
+}
+
+function shouldRetryNetworkError(error) {
+  const message = String(error?.message || "");
+  return /timed out|timeout|econnreset|econnrefused|fetch failed|socket hang up|network/i.test(message);
+}
+
+function retryDelayMs(attempt, retryAfterHeader) {
+  const retryAfterSeconds = Number(retryAfterHeader || "");
+  if (Number.isFinite(retryAfterSeconds) && retryAfterSeconds > 0) {
+    return retryAfterSeconds * 1000;
+  }
+  const base = Math.min(18000, 1800 * attempt);
+  const jitter = Math.floor(Math.random() * 900);
+  return base + jitter;
+}
+
+function minimumDispatchGapMs() {
+  const configured = Number(process.env.CLOUDSIGHT_DISPATCH_GAP_MS || 2500);
+  return Number.isFinite(configured) ? configured : 2500;
 }
 
 function sleep(ms) {

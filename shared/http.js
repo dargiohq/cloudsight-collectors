@@ -20,6 +20,8 @@ export function writeJson(response, statusCode, payload) {
 
 export function createJsonServer(handler) {
   return http.createServer(async (request, response) => {
+    const startedAt = Date.now();
+    const requestId = Math.random().toString(36).slice(2, 10);
     try {
       if (request.method === "GET" && request.url === "/") {
         return writeJson(response, 200, {
@@ -36,9 +38,12 @@ export function createJsonServer(handler) {
         return writeJson(response, 405, { error: "Method not allowed" });
       }
       const body = await readJsonBody(request);
+      console.log(`[collector:${requestId}] ${request.method} ${request.url} accepted`);
       const result = await handler({ request, body });
+      console.log(`[collector:${requestId}] completed in ${Date.now() - startedAt}ms with status=${result?.status || "UNKNOWN"}`);
       return writeJson(response, 200, result);
     } catch (error) {
+      console.error(`[collector:${requestId}] failed in ${Date.now() - startedAt}ms`, error);
       return writeJson(response, 500, {
         error: error instanceof Error ? error.message : "Unexpected collector failure"
       });
