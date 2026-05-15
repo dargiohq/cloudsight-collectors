@@ -88,6 +88,12 @@ async function performCollectorPost({
 
       lastFailure = new Error(`CloudSight collector ingestion failed: ${response.status} ${renderPayload(payload, text)}`);
       if (!shouldRetry(response.status, text) || attempt === maxAttempts) {
+        if (shouldRetry(response.status, text) && attempt === maxAttempts) {
+          const fallback = await fallbackToCollectorUsageApi(baseUrl, apiKey, normalizedBatch);
+          if (fallback) {
+            return fallback;
+          }
+        }
         return {
           status: shouldRetry(response.status, text) ? "RATE_LIMITED" : "ERROR",
           endpoint,
@@ -102,6 +108,12 @@ async function performCollectorPost({
     } catch (error) {
       lastFailure = error instanceof Error ? error : new Error(String(error));
       if (!shouldRetryNetworkError(lastFailure) || attempt === maxAttempts) {
+        if (shouldRetryNetworkError(lastFailure) && attempt === maxAttempts) {
+          const fallback = await fallbackToCollectorUsageApi(baseUrl, apiKey, normalizedBatch);
+          if (fallback) {
+            return fallback;
+          }
+        }
         return {
           status: "ERROR",
           endpoint,
@@ -112,6 +124,11 @@ async function performCollectorPost({
       }
       await sleep(retryDelayMs(attempt));
     }
+  }
+
+  const fallback = await fallbackToCollectorUsageApi(baseUrl, apiKey, normalizedBatch);
+  if (fallback) {
+    return fallback;
   }
 
   return {
@@ -170,6 +187,42 @@ function shouldRetry(status, text) {
 function shouldRetryNetworkError(error) {
   const message = String(error?.message || "");
   return /timed out|timeout|econnreset|econnrefused|fetch failed|socket hang up|network/i.test(message);
+}
+
+async function fallbackToCollectorUsageApi(baseUrl, apiKey, normalizedBatch) {
+  if (!apiKey) {
+    return null;
+  }
+
+  const endpoint = `${baseUrl.replace(/\/$/, "")}/api/usage/collector-batch`;
+  const response = await fetch(endpoint, {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+      "X-API-KEY": apiKey
+    },
+    body: JSON.stringify(normalizedBatch)
+  });
+
+  const text = await response.text();
+  const payload = safeJson(text);
+  if (!response.ok) {
+    return {
+      status: "ERROR",
+      endpoint,
+      httpStatus: response.status,
+      error: `Collector usage fallback failed: ${response.status} ${renderPayload(payload, text)}`,
+      response: payload
+    };
+  }
+
+  return {
+    status: "SUCCESS",
+    endpoint,
+    attempts: 1,
+    deliveryMode: "COLLECTOR_USAGE_FALLBACK",
+    response: payload
+  };
 }
 
 function retryDelayMs(attempt, retryAfterHeader) {
