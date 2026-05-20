@@ -194,34 +194,69 @@ async function fallbackToCollectorUsageApi(baseUrl, apiKey, normalizedBatch) {
     return null;
   }
 
-  const endpoint = `${baseUrl.replace(/\/$/, "")}/api/usage/collector-batch`;
-  const response = await fetch(endpoint, {
-    method: "POST",
-    headers: {
-      "Content-Type": "application/json",
-      "X-API-KEY": apiKey
-    },
-    body: JSON.stringify(normalizedBatch)
-  });
+  const endpoint = `${baseUrl.replace(/\/$/, "")}/api/usage`;
+  const storedEvents = [];
+  for (const event of normalizedBatch.events || []) {
+    const response = await fetch(endpoint, {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        "X-API-KEY": apiKey
+      },
+      body: JSON.stringify({
+        service: event.service,
+        inputEndpoint: event.inputEndpoint,
+        outputEndpoint: event.outputEndpoint,
+        inputUnits: event.inputUnits,
+        outputUnits: event.outputUnits,
+        timestamp: event.timestamp
+      })
+    });
 
-  const text = await response.text();
-  const payload = safeJson(text);
-  if (!response.ok) {
-    return {
-      status: "ERROR",
-      endpoint,
-      httpStatus: response.status,
-      error: `Collector usage fallback failed: ${response.status} ${renderPayload(payload, text)}`,
-      response: payload
-    };
+    const text = await response.text();
+    const payload = safeJson(text);
+    if (!response.ok) {
+      return {
+        status: "ERROR",
+        endpoint,
+        httpStatus: response.status,
+        error: `Collector usage relay failed: ${response.status} ${renderPayload(payload, text)}`,
+        response: payload
+      };
+    }
+
+    storedEvents.push({
+      service: event.service,
+      inputEndpoint: event.inputEndpoint,
+      outputEndpoint: event.outputEndpoint,
+      inputUnits: event.inputUnits,
+      outputUnits: event.outputUnits,
+      timestamp: payload.timestamp || event.timestamp,
+      calculatedCost: payload.calculatedCost,
+      collectorName: normalizedBatch.collectorName,
+      sourceType: event.sourceType,
+      sourceReference: event.sourceReference,
+      regionCode: event.regionCode,
+      deploymentEnvironment: event.deploymentEnvironment,
+      ingestionMode: "COLLECTOR_RELAY",
+      pricingSource: payload.pricingSource || "API"
+    });
   }
 
   return {
     status: "SUCCESS",
     endpoint,
     attempts: 1,
-    deliveryMode: "COLLECTOR_USAGE_FALLBACK",
-    response: payload
+    deliveryMode: "COLLECTOR_USAGE_RELAY",
+    response: {
+      status: "SUCCESS",
+      provider: normalizedBatch.provider,
+      collectorName: normalizedBatch.collectorName,
+      batchReference: normalizedBatch.batchReference,
+      mode: normalizedBatch.mode,
+      stored: storedEvents.length,
+      results: storedEvents
+    }
   };
 }
 
