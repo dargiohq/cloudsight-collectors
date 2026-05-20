@@ -87,13 +87,13 @@ async function performCollectorPost({
       }
 
       lastFailure = new Error(`CloudSight collector ingestion failed: ${response.status} ${renderPayload(payload, text)}`);
-      if (!shouldRetry(response.status, text) || attempt === maxAttempts) {
-        if (shouldRetry(response.status, text) && attempt === maxAttempts) {
-          const fallback = await fallbackToCollectorUsageApi(baseUrl, apiKey, normalizedBatch);
-          if (fallback) {
-            return fallback;
-          }
+      if (shouldRetry(response.status, text)) {
+        const fallback = await fallbackToCollectorUsageApi(baseUrl, apiKey, normalizedBatch);
+        if (fallback) {
+          return fallback;
         }
+      }
+      if (!shouldRetry(response.status, text) || attempt === maxAttempts) {
         return {
           status: shouldRetry(response.status, text) ? "RATE_LIMITED" : "ERROR",
           endpoint,
@@ -107,13 +107,13 @@ async function performCollectorPost({
       await sleep(retryDelayMs(attempt, response.headers.get("retry-after")));
     } catch (error) {
       lastFailure = error instanceof Error ? error : new Error(String(error));
-      if (!shouldRetryNetworkError(lastFailure) || attempt === maxAttempts) {
-        if (shouldRetryNetworkError(lastFailure) && attempt === maxAttempts) {
-          const fallback = await fallbackToCollectorUsageApi(baseUrl, apiKey, normalizedBatch);
-          if (fallback) {
-            return fallback;
-          }
+      if (shouldRetryNetworkError(lastFailure)) {
+        const fallback = await fallbackToCollectorUsageApi(baseUrl, apiKey, normalizedBatch);
+        if (fallback) {
+          return fallback;
         }
+      }
+      if (!shouldRetryNetworkError(lastFailure) || attempt === maxAttempts) {
         return {
           status: "ERROR",
           endpoint,
