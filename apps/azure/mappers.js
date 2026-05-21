@@ -2,6 +2,7 @@ import { buildCollectorBatch, buildCollectorEvent } from "../../shared/contract.
 
 function blobEvent(payload, context) {
   const eventTime = payload.eventTime || new Date().toISOString();
+  const sourceReference = payload.data?.url || payload.subject || payload.id || payload.eventType || "Microsoft.Storage.BlobCreated";
   return buildCollectorEvent({
     service: "AZURE",
     inputEndpoint: "blob-write",
@@ -10,7 +11,7 @@ function blobEvent(payload, context) {
     outputUnits: 0,
     timestamp: eventTime,
     sourceType: "EVENT_GRID",
-    sourceReference: payload.eventType || "Microsoft.Storage.BlobCreated",
+    sourceReference,
     regionCode: payload.data?.api || context.regionCode,
     deploymentEnvironment: context.environment,
     tags: {

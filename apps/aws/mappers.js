@@ -21,6 +21,8 @@ function s3RecordToEvent(record, context) {
 }
 
 function eventBridgeS3ToEvent(payload, context) {
+  const bucketName = payload?.detail?.bucket?.name || payload?.detail?.requestParameters?.bucketName || "";
+  const objectKey = payload?.detail?.object?.key || payload?.detail?.requestParameters?.key || "";
   return buildCollectorEvent({
     service: "AWS",
     inputEndpoint: "s3-put",
@@ -29,7 +31,7 @@ function eventBridgeS3ToEvent(payload, context) {
     outputUnits: 0,
     timestamp: payload.time || new Date().toISOString(),
     sourceType: "EVENTBRIDGE",
-    sourceReference: payload["detail-type"] || "Object Created",
+    sourceReference: objectKey ? `${bucketName}/${objectKey}` : (payload["detail-type"] || "Object Created"),
     regionCode: payload.region || context.regionCode,
     deploymentEnvironment: context.environment,
     tags: {

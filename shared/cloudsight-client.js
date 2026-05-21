@@ -2,6 +2,9 @@ import { buildCollectorBatch } from "./contract.js";
 
 let dispatchQueue = Promise.resolve();
 let nextDispatchAt = 0;
+const DEFAULT_WAKE_ATTEMPTS = 36;
+const DEFAULT_WAKE_DELAY_MS = 5000;
+const DEFAULT_FETCH_TIMEOUT_MS = 15000;
 
 function required(name, value) {
   if (!value) {
@@ -77,11 +80,8 @@ async function performCollectorPost({
   collectorKey,
   normalizedBatch
 }) {
-  const maxAttempts = Number(process.env.CLOUDSIGHT_DISPATCH_ATTEMPTS || 10);
-  const candidates = [...new Set([
-    String(baseUrl || "").replace(/\/$/, ""),
-    publicFallbackBaseUrl(baseUrl).replace(/\/$/, "")
-  ].filter(Boolean))];
+  const maxAttempts = Number(process.env.CLOUDSIGHT_DISPATCH_ATTEMPTS || 20);
+  const candidates = await discoverCandidateBaseUrls(baseUrl);
   let lastFailure;
   let lastPayload;
   let lastEndpoint = `${String(baseUrl || "").replace(/\/$/, "")}/api/collector/events`;
@@ -94,7 +94,7 @@ async function performCollectorPost({
       const endpoint = `${candidateBaseUrl}/api/collector/events`;
       lastEndpoint = endpoint;
       try {
-        const response = await fetch(endpoint, {
+        const response = await timedFetch(endpoint, {
           method: "POST",
           headers: collectorHeaders({
             apiKey,
@@ -172,6 +172,95 @@ async function performCollectorPost({
     error: lastFailure?.message ?? "CloudSight collector ingestion failed",
     response: lastPayload ?? {}
   };
+}
+
+async function discoverCandidateBaseUrls(baseUrl) {
+  const configuredBaseUrl = String(baseUrl || "").replace(/\/$/, "");
+  const publicBaseUrl = publicFallbackBaseUrl(baseUrl).replace(/\/$/, "");
+  const configuredInternalBaseUrl = String(process.env.CLOUDSIGHT_INTERNAL_BASE_URL || "").trim().replace(/\/$/, "");
+  const candidates = [];
+
+  if (configuredInternalBaseUrl) {
+    candidates.push(configuredInternalBaseUrl);
+  }
+
+  if (publicBaseUrl) {
+    await warmCloudSight(publicBaseUrl);
+    const discoveredInternalBaseUrl = await discoverInternalBaseUrl(publicBaseUrl);
+    if (discoveredInternalBaseUrl) {
+      candidates.push(discoveredInternalBaseUrl);
+    }
+  }
+
+  if (configuredBaseUrl) {
+    candidates.push(configuredBaseUrl);
+  }
+  if (publicBaseUrl) {
+    candidates.push(publicBaseUrl);
+  }
+
+  return [...new Set(candidates.filter(Boolean))];
+}
+
+async function warmCloudSight(baseUrl) {
+  const wakeAttempts = Number(process.env.CLOUDSIGHT_WAKE_ATTEMPTS || DEFAULT_WAKE_ATTEMPTS);
+  const wakeDelayMs = Number(process.env.CLOUDSIGHT_WAKE_DELAY_MS || DEFAULT_WAKE_DELAY_MS);
+  const endpoint = `${baseUrl}/health`;
+  let lastError = null;
+
+  for (let attempt = 1; attempt <= wakeAttempts; attempt += 1) {
+    try {
+      const response = await timedFetch(endpoint, {
+        method: "GET",
+        headers: {
+          "Cache-Control": "no-cache"
+        }
+      });
+      if (response.ok) {
+        return true;
+      }
+
+      const text = await response.text();
+      if (!shouldRetry(response.status, text)) {
+        return false;
+      }
+      lastError = new Error(`CloudSight wake failed: ${response.status} ${text}`);
+    } catch (error) {
+      lastError = error instanceof Error ? error : new Error(String(error));
+      if (!shouldRetryNetworkError(lastError)) {
+        return false;
+      }
+    }
+
+    await sleep(wakeDelayMs);
+  }
+
+  if (lastError) {
+    console.warn(`[collector] CloudSight wake did not succeed after ${wakeAttempts} attempts: ${lastError.message}`);
+  }
+  return false;
+}
+
+async function discoverInternalBaseUrl(baseUrl) {
+  try {
+    const response = await timedFetch(`${baseUrl}/health/details`, {
+      method: "GET",
+      headers: {
+        "Cache-Control": "no-cache"
+      }
+    });
+    if (!response.ok) {
+      return "";
+    }
+    const payload = safeJson(await response.text());
+    const internalBaseUrl = String(payload?.internalBaseUrl || "").trim().replace(/\/$/, "");
+    return internalBaseUrl;
+  } catch (error) {
+    if (process.env.CLOUDSIGHT_DEBUG_DISCOVERY === "true") {
+      console.warn(`[collector] Failed to discover CloudSight internal URL: ${error instanceof Error ? error.message : String(error)}`);
+    }
+    return "";
+  }
 }
 
 function directUsageFallbackAllowed() {
@@ -336,13 +425,24 @@ async function fallbackToCollectorUsageApi(baseUrl, apiKey, normalizedBatch) {
   };
 }
 
+async function timedFetch(url, options = {}) {
+  const timeoutMs = Number(process.env.CLOUDSIGHT_FETCH_TIMEOUT_MS || DEFAULT_FETCH_TIMEOUT_MS);
+  const signal = typeof AbortSignal !== "undefined" && typeof AbortSignal.timeout === "function"
+    ? AbortSignal.timeout(timeoutMs)
+    : undefined;
+  return fetch(url, {
+    ...options,
+    signal
+  });
+}
+
 function retryDelayMs(attempt, retryAfterHeader) {
   const retryAfterSeconds = Number(retryAfterHeader || "");
   if (Number.isFinite(retryAfterSeconds) && retryAfterSeconds > 0) {
     return retryAfterSeconds * 1000;
   }
-  const base = Math.min(18000, 1800 * attempt);
-  const jitter = Math.floor(Math.random() * 900);
+  const base = Math.min(20000, 2500 * attempt);
+  const jitter = Math.floor(Math.random() * 1200);
   return base + jitter;
 }
 

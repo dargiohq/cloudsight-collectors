@@ -1,6 +1,7 @@
 import { buildCollectorBatch, buildCollectorEvent } from "../../shared/contract.js";
 
 function storageAuditEvent(payload, context) {
+  const sourceReference = payload.resourceName || payload.insertId || payload.protoPayload?.methodName || "storage.objects.create";
   return buildCollectorEvent({
     service: "GCP",
     inputEndpoint: "cloud-storage-class-a",
@@ -9,7 +10,7 @@ function storageAuditEvent(payload, context) {
     outputUnits: 0,
     timestamp: payload.timestamp || payload.receiveTimestamp || new Date().toISOString(),
     sourceType: "AUDIT_LOG",
-    sourceReference: payload.protoPayload?.methodName || "storage.objects.create",
+    sourceReference,
     regionCode: payload.resource?.labels?.location || context.regionCode,
     deploymentEnvironment: context.environment,
     tags: {
