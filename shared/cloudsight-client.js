@@ -46,6 +46,19 @@ export async function postCollectorBatch({
   }));
 }
 
+function collectorHeaders({ apiKey, collectorId, collectorKey, normalizedBatch }) {
+  const usingSignedCollector = Boolean(collectorId && collectorKey);
+  return {
+    "Content-Type": "application/json",
+    ...(apiKey ? { "X-API-KEY": apiKey } : {}),
+    ...(collectorId ? { "X-COLLECTOR-ID": collectorId } : {}),
+    ...(collectorKey ? { "X-COLLECTOR-KEY": collectorKey } : {}),
+    ...(!usingSignedCollector && normalizedBatch.collectorName
+      ? { "X-COLLECTOR-NAME": normalizedBatch.collectorName }
+      : {})
+  };
+}
+
 function publicFallbackBaseUrl(baseUrl) {
   const configured = process.env.CLOUDSIGHT_PUBLIC_BASE_URL;
   if (configured) {
@@ -64,67 +77,69 @@ async function performCollectorPost({
   collectorKey,
   normalizedBatch
 }) {
-  const endpoint = `${baseUrl.replace(/\/$/, "")}/api/collector/events`;
   const maxAttempts = Number(process.env.CLOUDSIGHT_DISPATCH_ATTEMPTS || 10);
+  const candidates = [...new Set([
+    String(baseUrl || "").replace(/\/$/, ""),
+    publicFallbackBaseUrl(baseUrl).replace(/\/$/, "")
+  ].filter(Boolean))];
   let lastFailure;
   let lastPayload;
+  let lastEndpoint = `${String(baseUrl || "").replace(/\/$/, "")}/api/collector/events`;
+  let lastHttpStatus;
   for (let attempt = 1; attempt <= maxAttempts; attempt += 1) {
-    const usingSignedCollector = Boolean(collectorId && collectorKey);
-    try {
-      const response = await fetch(endpoint, {
-        method: "POST",
-        headers: {
-          "Content-Type": "application/json",
-          ...(apiKey ? { "X-API-KEY": apiKey } : {}),
-          ...(collectorId ? { "X-COLLECTOR-ID": collectorId } : {}),
-          ...(collectorKey ? { "X-COLLECTOR-KEY": collectorKey } : {}),
-          ...(!usingSignedCollector && normalizedBatch.collectorName
-            ? { "X-COLLECTOR-NAME": normalizedBatch.collectorName }
-            : {})
-        },
-        body: JSON.stringify(normalizedBatch)
-      });
+    let retryAfterHeader = null;
+    let shouldBackoff = false;
 
-      const text = await response.text();
-      const payload = safeJson(text);
-      lastPayload = payload;
-      if (response.ok) {
-        return {
-          status: "SUCCESS",
-          endpoint,
-          attempts: attempt,
-          response: payload
-        };
-      }
+    for (const candidateBaseUrl of candidates) {
+      const endpoint = `${candidateBaseUrl}/api/collector/events`;
+      lastEndpoint = endpoint;
+      try {
+        const response = await fetch(endpoint, {
+          method: "POST",
+          headers: collectorHeaders({
+            apiKey,
+            collectorId,
+            collectorKey,
+            normalizedBatch
+          }),
+          body: JSON.stringify(normalizedBatch)
+        });
 
-      lastFailure = new Error(`CloudSight collector ingestion failed: ${response.status} ${renderPayload(payload, text)}`);
-      if (shouldRetry(response.status, text)) {
-        const fallback = await fallbackToCollectorUsageApiWithPublicFallback(baseUrl, apiKey, normalizedBatch);
-        if (fallback) {
-          return fallback;
+        const text = await response.text();
+        const payload = safeJson(text);
+        lastPayload = payload;
+        lastHttpStatus = response.status;
+        if (response.ok) {
+          return {
+            status: "SUCCESS",
+            endpoint,
+            attempts: attempt,
+            response: payload
+          };
         }
-      }
-      if (!shouldRetry(response.status, text) || attempt === maxAttempts) {
+
+        lastFailure = new Error(`CloudSight collector ingestion failed: ${response.status} ${renderPayload(payload, text)}`);
+        if (shouldRetry(response.status, text)) {
+          shouldBackoff = true;
+          retryAfterHeader = retryAfterHeader || response.headers.get("retry-after");
+          continue;
+        }
+
         return {
-          status: shouldRetry(response.status, text) ? "RATE_LIMITED" : "ERROR",
+          status: "ERROR",
           endpoint,
           attempts: attempt,
           httpStatus: response.status,
           error: lastFailure.message,
           response: payload
         };
-      }
-
-      await sleep(retryDelayMs(attempt, response.headers.get("retry-after")));
-    } catch (error) {
-      lastFailure = error instanceof Error ? error : new Error(String(error));
-      if (shouldRetryNetworkError(lastFailure)) {
-        const fallback = await fallbackToCollectorUsageApiWithPublicFallback(baseUrl, apiKey, normalizedBatch);
-        if (fallback) {
-          return fallback;
+      } catch (error) {
+        lastFailure = error instanceof Error ? error : new Error(String(error));
+        if (shouldRetryNetworkError(lastFailure)) {
+          shouldBackoff = true;
+          continue;
         }
-      }
-      if (!shouldRetryNetworkError(lastFailure) || attempt === maxAttempts) {
+
         return {
           status: "ERROR",
           endpoint,
@@ -133,22 +148,41 @@ async function performCollectorPost({
           response: lastPayload ?? {}
         };
       }
-      await sleep(retryDelayMs(attempt));
+    }
+
+    if (attempt === maxAttempts || !shouldBackoff) {
+      break;
+    }
+
+    await sleep(retryDelayMs(attempt, retryAfterHeader));
+  }
+
+  if (directUsageFallbackAllowed()) {
+    const fallback = await fallbackToCollectorUsageApiWithPublicFallback(baseUrl, apiKey, normalizedBatch);
+    if (fallback) {
+      return fallback;
     }
   }
 
-  const fallback = await fallbackToCollectorUsageApiWithPublicFallback(baseUrl, apiKey, normalizedBatch);
-  if (fallback) {
-    return fallback;
-  }
-
   return {
-    status: "ERROR",
-    endpoint,
+    status: isRetryableFailure(lastFailure, lastHttpStatus, lastPayload) ? "RATE_LIMITED" : "ERROR",
+    endpoint: lastEndpoint,
     attempts: maxAttempts,
+    httpStatus: lastHttpStatus,
     error: lastFailure?.message ?? "CloudSight collector ingestion failed",
     response: lastPayload ?? {}
   };
+}
+
+function directUsageFallbackAllowed() {
+  return String(process.env.CLOUDSIGHT_ALLOW_DIRECT_USAGE_FALLBACK || "").toLowerCase() === "true";
+}
+
+function isRetryableFailure(error, httpStatus, payload) {
+  if (typeof httpStatus === "number" && shouldRetry(httpStatus, JSON.stringify(payload || {}))) {
+    return true;
+  }
+  return shouldRetryNetworkError(error);
 }
 
 async function fallbackToCollectorUsageApiWithPublicFallback(baseUrl, apiKey, normalizedBatch) {
