@@ -46,6 +46,17 @@ export async function postCollectorBatch({
   }));
 }
 
+function publicFallbackBaseUrl(baseUrl) {
+  const configured = process.env.CLOUDSIGHT_PUBLIC_BASE_URL;
+  if (configured) {
+    return configured;
+  }
+  if (/^https:\/\/dargio-cloudsight-backend\.onrender\.com\/?$/i.test(String(baseUrl || ""))) {
+    return String(baseUrl || "");
+  }
+  return "https://dargio-cloudsight-backend.onrender.com";
+}
+
 async function performCollectorPost({
   baseUrl,
   apiKey,
@@ -88,7 +99,7 @@ async function performCollectorPost({
 
       lastFailure = new Error(`CloudSight collector ingestion failed: ${response.status} ${renderPayload(payload, text)}`);
       if (shouldRetry(response.status, text)) {
-        const fallback = await fallbackToCollectorUsageApi(baseUrl, apiKey, normalizedBatch);
+        const fallback = await fallbackToCollectorUsageApiWithPublicFallback(baseUrl, apiKey, normalizedBatch);
         if (fallback) {
           return fallback;
         }
@@ -108,7 +119,7 @@ async function performCollectorPost({
     } catch (error) {
       lastFailure = error instanceof Error ? error : new Error(String(error));
       if (shouldRetryNetworkError(lastFailure)) {
-        const fallback = await fallbackToCollectorUsageApi(baseUrl, apiKey, normalizedBatch);
+        const fallback = await fallbackToCollectorUsageApiWithPublicFallback(baseUrl, apiKey, normalizedBatch);
         if (fallback) {
           return fallback;
         }
@@ -126,7 +137,7 @@ async function performCollectorPost({
     }
   }
 
-  const fallback = await fallbackToCollectorUsageApi(baseUrl, apiKey, normalizedBatch);
+  const fallback = await fallbackToCollectorUsageApiWithPublicFallback(baseUrl, apiKey, normalizedBatch);
   if (fallback) {
     return fallback;
   }
@@ -138,6 +149,37 @@ async function performCollectorPost({
     error: lastFailure?.message ?? "CloudSight collector ingestion failed",
     response: lastPayload ?? {}
   };
+}
+
+async function fallbackToCollectorUsageApiWithPublicFallback(baseUrl, apiKey, normalizedBatch) {
+  if (!apiKey) {
+    return null;
+  }
+
+  const candidates = [...new Set([
+    baseUrl,
+    publicFallbackBaseUrl(baseUrl)
+  ].filter(Boolean))];
+
+  let lastError;
+  for (const candidate of candidates) {
+    try {
+      const result = await fallbackToCollectorUsageApi(candidate, apiKey, normalizedBatch);
+      if (result) {
+        if (candidate !== baseUrl) {
+          result.relayBaseUrl = candidate;
+        }
+        return result;
+      }
+    } catch (error) {
+      lastError = error instanceof Error ? error : new Error(String(error));
+    }
+  }
+
+  if (lastError) {
+    throw lastError;
+  }
+  return null;
 }
 
 function enqueueDispatch(task) {
