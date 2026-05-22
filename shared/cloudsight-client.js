@@ -73,6 +73,19 @@ function publicFallbackBaseUrl(baseUrl) {
   return "https://dargio-cloudsight-backend.onrender.com";
 }
 
+function derivedInternalBaseUrl(baseUrl) {
+  const configured = String(process.env.CLOUDSIGHT_INTERNAL_BASE_URL || "").trim();
+  if (configured) {
+    return configured;
+  }
+
+  const normalized = String(baseUrl || "").trim().replace(/\/$/, "");
+  if (/^https:\/\/dargio-cloudsight-backend\.onrender\.com$/i.test(normalized)) {
+    return "http://dargio-cloudsight-backend-discovery:10000";
+  }
+  return "";
+}
+
 async function performCollectorPost({
   baseUrl,
   apiKey,
@@ -82,7 +95,7 @@ async function performCollectorPost({
 }) {
   const maxAttempts = Number(process.env.CLOUDSIGHT_DISPATCH_ATTEMPTS || DEFAULT_DISPATCH_ATTEMPTS);
   const candidates = await discoverCandidateBaseUrls(baseUrl);
-  const warmedCandidates = new Set();
+  const attemptedCandidates = [];
   let lastFailure;
   let lastPayload;
   let lastEndpoint = `${String(baseUrl || "").replace(/\/$/, "")}/api/collector/events`;
@@ -94,10 +107,10 @@ async function performCollectorPost({
     for (const candidateBaseUrl of candidates) {
       const endpoint = `${candidateBaseUrl}/api/collector/events`;
       lastEndpoint = endpoint;
+      attemptedCandidates.push(endpoint);
       try {
-        if (!warmedCandidates.has(candidateBaseUrl)) {
+        if (warmCloudSightEnabled()) {
           await warmCloudSightBase(candidateBaseUrl);
-          warmedCandidates.add(candidateBaseUrl);
         }
         const response = await timedFetch(endpoint, {
           method: "POST",
@@ -119,6 +132,7 @@ async function performCollectorPost({
             status: "SUCCESS",
             endpoint,
             attempts: attempt,
+            candidatesTried: [...new Set(attemptedCandidates)],
             response: payload
           };
         }
@@ -134,6 +148,7 @@ async function performCollectorPost({
           status: "ERROR",
           endpoint,
           attempts: attempt,
+          candidatesTried: [...new Set(attemptedCandidates)],
           httpStatus: response.status,
           error: lastFailure.message,
           response: payload
@@ -149,6 +164,7 @@ async function performCollectorPost({
           status: "ERROR",
           endpoint,
           attempts: attempt,
+          candidatesTried: [...new Set(attemptedCandidates)],
           error: lastFailure.message,
           response: lastPayload ?? {}
         };
@@ -173,6 +189,7 @@ async function performCollectorPost({
     status: isRetryableFailure(lastFailure, lastHttpStatus, lastPayload) ? "RATE_LIMITED" : "ERROR",
     endpoint: lastEndpoint,
     attempts: maxAttempts,
+    candidatesTried: [...new Set(attemptedCandidates)],
     httpStatus: lastHttpStatus,
     error: lastFailure?.message ?? "CloudSight collector ingestion failed",
     response: lastPayload ?? {}
@@ -182,7 +199,7 @@ async function performCollectorPost({
 async function discoverCandidateBaseUrls(baseUrl) {
   const configuredBaseUrl = String(baseUrl || "").replace(/\/$/, "");
   const publicBaseUrl = publicFallbackBaseUrl(baseUrl).replace(/\/$/, "");
-  const configuredInternalBaseUrl = String(process.env.CLOUDSIGHT_INTERNAL_BASE_URL || "").trim().replace(/\/$/, "");
+  const configuredInternalBaseUrl = derivedInternalBaseUrl(baseUrl).replace(/\/$/, "");
   const candidates = [];
 
   if (configuredInternalBaseUrl) {
@@ -202,7 +219,7 @@ async function discoverCandidateBaseUrls(baseUrl) {
 async function warmCloudSightBase(baseUrl) {
   const attempts = Number(process.env.CLOUDSIGHT_WAKE_ATTEMPTS || DEFAULT_WAKE_ATTEMPTS);
   if (!Number.isFinite(attempts) || attempts <= 0) {
-    return;
+    return false;
   }
 
   const endpoint = `${baseUrl.replace(/\/$/, "")}/health`;
@@ -212,16 +229,16 @@ async function warmCloudSightBase(baseUrl) {
       const response = await timedFetch(endpoint, { method: "GET" });
       const text = await response.text();
       if (response.ok) {
-        return;
+        return true;
       }
       lastError = new Error(`CloudSight wake failed: ${response.status} ${renderPayload(safeJson(text), text)}`);
       if (!shouldRetry(response.status, text)) {
-        return;
+        return false;
       }
     } catch (error) {
       lastError = error instanceof Error ? error : new Error(String(error));
       if (!shouldRetryNetworkError(lastError)) {
-        return;
+        return false;
       }
     }
 
@@ -230,9 +247,11 @@ async function warmCloudSightBase(baseUrl) {
     }
   }
 
-  if (lastError) {
-    throw lastError;
-  }
+  return false;
+}
+
+function warmCloudSightEnabled() {
+  return String(process.env.CLOUDSIGHT_ENABLE_WAKE || "").trim().toLowerCase() === "true";
 }
 function directUsageFallbackAllowed() {
   const explicit = String(process.env.CLOUDSIGHT_ALLOW_DIRECT_USAGE_FALLBACK || "").trim().toLowerCase();
