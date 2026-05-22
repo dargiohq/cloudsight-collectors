@@ -1,4 +1,5 @@
 name: Deploy Oracle Collectors
+# Auto-deploys Oracle collectors on main pushes.
 
 on:
   push:
