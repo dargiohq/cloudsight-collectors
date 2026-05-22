@@ -1,0 +1,72 @@
+name: Deploy Oracle Collectors
+
+on:
+  push:
+    branches:
+      - main
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+env:
+  ORACLE_HOST: 129.213.111.220
+  ORACLE_USER: ubuntu
+  REPO_NAME: cloudsight-collectors
+  ARCHIVE_NAME: cloudsight-collectors.tar.gz
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    concurrency:
+      group: oracle-collectors-deploy
+      cancel-in-progress: true
+
+    steps:
+      - name: Check out source
+        uses: actions/checkout@v4
+
+      - name: Create source archive
+        run: git archive --format=tar.gz --output "/tmp/${ARCHIVE_NAME}" HEAD
+
+      - name: Configure SSH
+        run: |
+          mkdir -p ~/.ssh
+          cat <<'EOF' > ~/.ssh/oracle_deploy_key
+          ${{ secrets.ORACLE_SSH_KEY }}
+          EOF
+          chmod 600 ~/.ssh/oracle_deploy_key
+          ssh-keyscan -H "${ORACLE_HOST}" >> ~/.ssh/known_hosts
+
+      - name: Upload source bundle
+        run: |
+          scp -i ~/.ssh/oracle_deploy_key "/tmp/${ARCHIVE_NAME}" \
+            "${ORACLE_USER}@${ORACLE_HOST}:/tmp/${ARCHIVE_NAME}"
+
+      - name: Deploy collectors on Oracle
+        run: |
+          ssh -i ~/.ssh/oracle_deploy_key "${ORACLE_USER}@${ORACLE_HOST}" <<'EOF'
+          set -euo pipefail
+          flock -w 1800 /tmp/cloudsight-oracle-deploy.lock bash -lc '
+            set -euo pipefail
+            ROOT=/opt/cloudsight
+            REPO=cloudsight-collectors
+            ARCHIVE=/tmp/cloudsight-collectors.tar.gz
+            STAGE=$(mktemp -d /tmp/cloudsight-collectors.XXXXXX)
+
+            mkdir -p "$ROOT/$REPO"
+            tar -xzf "$ARCHIVE" -C "$STAGE"
+            rsync -a --delete "$STAGE"/ "$ROOT/$REPO"/
+            rm -rf "$STAGE" "$ARCHIVE"
+
+            cd "$ROOT/oracle-cloudsight-stack"
+            docker compose build collector-aws collector-gcp collector-azure
+            docker compose up -d collector-aws collector-gcp collector-azure
+            docker compose ps collector-aws collector-gcp collector-azure
+
+            docker compose exec -T collector-aws node -e "fetch(\"http://127.0.0.1:9093/health\").then(async (response) => { if (!response.ok) { throw new Error(await response.text()); } console.log(await response.text()); }).catch((error) => { console.error(error); process.exit(1); })"
+            docker compose exec -T collector-gcp node -e "fetch(\"http://127.0.0.1:9094/health\").then(async (response) => { if (!response.ok) { throw new Error(await response.text()); } console.log(await response.text()); }).catch((error) => { console.error(error); process.exit(1); })"
+            docker compose exec -T collector-azure node -e "fetch(\"http://127.0.0.1:9095/health\").then(async (response) => { if (!response.ok) { throw new Error(await response.text()); } console.log(await response.text()); }).catch((error) => { console.error(error); process.exit(1); })"
+          '
+          EOF
