@@ -74,17 +74,12 @@ function publicFallbackBaseUrl(baseUrl) {
 }
 
 function derivedInternalBaseUrls(baseUrl) {
-  const candidates = [];
-
-  const normalized = String(baseUrl || "").trim().replace(/\/$/, "");
-  if (/dargio-cloudsight-backend\.onrender\.com/i.test(normalized)) {
-    candidates.push(
-      "http://dargio-cloudsight-backend:10000",
-      "http://dargio-cloudsight-backend-discovery:10000",
-      "http://dargio-cloudsight-backend",
-      "http://dargio-cloudsight-backend:8080"
-    );
-  }
+  const candidates = [
+    "http://dargio-cloudsight-backend:10000",
+    "http://dargio-cloudsight-backend-discovery:10000",
+    "http://dargio-cloudsight-backend",
+    "http://dargio-cloudsight-backend:8080"
+  ];
 
   const configured = String(process.env.CLOUDSIGHT_INTERNAL_BASE_URL || "").trim();
   if (configured) {
