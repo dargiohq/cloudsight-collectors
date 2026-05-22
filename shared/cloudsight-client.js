@@ -2,9 +2,8 @@ import { buildCollectorBatch } from "./contract.js";
 
 let dispatchQueue = Promise.resolve();
 let nextDispatchAt = 0;
-const DEFAULT_WAKE_ATTEMPTS = 36;
-const DEFAULT_WAKE_DELAY_MS = 5000;
-const DEFAULT_FETCH_TIMEOUT_MS = 15000;
+const DEFAULT_FETCH_TIMEOUT_MS = 120000;
+const DEFAULT_DISPATCH_ATTEMPTS = 3;
 
 function required(name, value) {
   if (!value) {
@@ -80,7 +79,7 @@ async function performCollectorPost({
   collectorKey,
   normalizedBatch
 }) {
-  const maxAttempts = Number(process.env.CLOUDSIGHT_DISPATCH_ATTEMPTS || 20);
+  const maxAttempts = Number(process.env.CLOUDSIGHT_DISPATCH_ATTEMPTS || DEFAULT_DISPATCH_ATTEMPTS);
   const candidates = await discoverCandidateBaseUrls(baseUrl);
   let lastFailure;
   let lastPayload;
@@ -150,7 +149,7 @@ async function performCollectorPost({
       }
     }
 
-    if (attempt === maxAttempts || !shouldBackoff) {
+    if (attempt === maxAttempts || !shouldBackoff || (directUsageFallbackAllowed() && attempt >= 2)) {
       break;
     }
 
@@ -184,14 +183,6 @@ async function discoverCandidateBaseUrls(baseUrl) {
     candidates.push(configuredInternalBaseUrl);
   }
 
-  if (publicBaseUrl) {
-    await warmCloudSight(publicBaseUrl);
-    const discoveredInternalBaseUrl = await discoverInternalBaseUrl(publicBaseUrl);
-    if (discoveredInternalBaseUrl) {
-      candidates.push(discoveredInternalBaseUrl);
-    }
-  }
-
   if (configuredBaseUrl) {
     candidates.push(configuredBaseUrl);
   }
@@ -201,70 +192,15 @@ async function discoverCandidateBaseUrls(baseUrl) {
 
   return [...new Set(candidates.filter(Boolean))];
 }
-
-async function warmCloudSight(baseUrl) {
-  const wakeAttempts = Number(process.env.CLOUDSIGHT_WAKE_ATTEMPTS || DEFAULT_WAKE_ATTEMPTS);
-  const wakeDelayMs = Number(process.env.CLOUDSIGHT_WAKE_DELAY_MS || DEFAULT_WAKE_DELAY_MS);
-  const endpoint = `${baseUrl}/health`;
-  let lastError = null;
-
-  for (let attempt = 1; attempt <= wakeAttempts; attempt += 1) {
-    try {
-      const response = await timedFetch(endpoint, {
-        method: "GET",
-        headers: {
-          "Cache-Control": "no-cache"
-        }
-      });
-      if (response.ok) {
-        return true;
-      }
-
-      const text = await response.text();
-      if (!shouldRetry(response.status, text)) {
-        return false;
-      }
-      lastError = new Error(`CloudSight wake failed: ${response.status} ${text}`);
-    } catch (error) {
-      lastError = error instanceof Error ? error : new Error(String(error));
-      if (!shouldRetryNetworkError(lastError)) {
-        return false;
-      }
-    }
-
-    await sleep(wakeDelayMs);
-  }
-
-  if (lastError) {
-    console.warn(`[collector] CloudSight wake did not succeed after ${wakeAttempts} attempts: ${lastError.message}`);
-  }
-  return false;
-}
-
-async function discoverInternalBaseUrl(baseUrl) {
-  try {
-    const response = await timedFetch(`${baseUrl}/health/details`, {
-      method: "GET",
-      headers: {
-        "Cache-Control": "no-cache"
-      }
-    });
-    if (!response.ok) {
-      return "";
-    }
-    const payload = safeJson(await response.text());
-    const internalBaseUrl = String(payload?.internalBaseUrl || "").trim().replace(/\/$/, "");
-    return internalBaseUrl;
-  } catch (error) {
-    if (process.env.CLOUDSIGHT_DEBUG_DISCOVERY === "true") {
-      console.warn(`[collector] Failed to discover CloudSight internal URL: ${error instanceof Error ? error.message : String(error)}`);
-    }
-    return "";
-  }
-}
-
 function directUsageFallbackAllowed() {
-  return String(process.env.CLOUDSIGHT_ALLOW_DIRECT_USAGE_FALLBACK || "").toLowerCase() === "true";
+  const explicit = String(process.env.CLOUDSIGHT_ALLOW_DIRECT_USAGE_FALLBACK || "").trim().toLowerCase();
+  if (explicit === "true") {
+    return true;
+  }
+  if (explicit === "false") {
+    return false;
+  }
+  return Boolean(process.env.CLOUDSIGHT_API_KEY);
 }
 
 function isRetryableFailure(error, httpStatus, payload) {
@@ -362,7 +298,7 @@ async function fallbackToCollectorUsageApi(baseUrl, apiKey, normalizedBatch) {
   const endpoint = `${baseUrl.replace(/\/$/, "")}/api/usage`;
   const storedEvents = [];
   for (const event of normalizedBatch.events || []) {
-    const response = await fetch(endpoint, {
+    const response = await timedFetch(endpoint, {
       method: "POST",
       headers: {
         "Content-Type": "application/json",
