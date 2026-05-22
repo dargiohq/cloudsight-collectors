@@ -74,16 +74,24 @@ function publicFallbackBaseUrl(baseUrl) {
 }
 
 function derivedInternalBaseUrls(baseUrl) {
-  const candidates = [
-    "http://dargio-cloudsight-backend:10000",
-    "http://dargio-cloudsight-backend-discovery:10000",
-    "http://dargio-cloudsight-backend",
-    "http://dargio-cloudsight-backend:8080"
-  ];
+  const enabled = String(process.env.CLOUDSIGHT_USE_INTERNAL_BASE_URLS || "").trim().toLowerCase() === "true";
+  if (!enabled) {
+    return [];
+  }
 
+  const candidates = [];
   const configured = String(process.env.CLOUDSIGHT_INTERNAL_BASE_URL || "").trim();
   if (configured) {
     candidates.push(configured);
+  }
+
+  const normalized = String(baseUrl || "").trim().replace(/\/$/, "");
+  if (/^https:\/\/dargio-cloudsight-backend\.onrender\.com$/i.test(normalized)) {
+    candidates.push(
+      "http://dargio-cloudsight-backend-discovery:10000",
+      "http://dargio-cloudsight-backend:10000",
+      "http://dargio-cloudsight-backend:8080"
+    );
   }
   return [...new Set(candidates.filter(Boolean))];
 }
@@ -271,10 +279,7 @@ function warmCloudSightEnabled() {
 }
 function directUsageFallbackAllowed() {
   const explicit = String(process.env.CLOUDSIGHT_ALLOW_DIRECT_USAGE_FALLBACK || "").trim().toLowerCase();
-  if (explicit === "false") {
-    return false;
-  }
-  return true;
+  return explicit === "true";
 }
 
 function isRetryableFailure(error, httpStatus, payload) {
