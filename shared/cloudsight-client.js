@@ -4,6 +4,7 @@ let dispatchQueue = Promise.resolve();
 let nextDispatchAt = 0;
 const DEFAULT_FETCH_TIMEOUT_MS = 180000;
 const DEFAULT_DISPATCH_ATTEMPTS = 5;
+const DEFAULT_WAKE_ATTEMPTS = 3;
 
 function required(name, value) {
   if (!value) {
@@ -81,6 +82,7 @@ async function performCollectorPost({
 }) {
   const maxAttempts = Number(process.env.CLOUDSIGHT_DISPATCH_ATTEMPTS || DEFAULT_DISPATCH_ATTEMPTS);
   const candidates = await discoverCandidateBaseUrls(baseUrl);
+  const warmedCandidates = new Set();
   let lastFailure;
   let lastPayload;
   let lastEndpoint = `${String(baseUrl || "").replace(/\/$/, "")}/api/collector/events`;
@@ -93,6 +95,10 @@ async function performCollectorPost({
       const endpoint = `${candidateBaseUrl}/api/collector/events`;
       lastEndpoint = endpoint;
       try {
+        if (!warmedCandidates.has(candidateBaseUrl)) {
+          await warmCloudSightBase(candidateBaseUrl);
+          warmedCandidates.add(candidateBaseUrl);
+        }
         const response = await timedFetch(endpoint, {
           method: "POST",
           headers: collectorHeaders({
@@ -191,6 +197,42 @@ async function discoverCandidateBaseUrls(baseUrl) {
   }
 
   return [...new Set(candidates.filter(Boolean))];
+}
+
+async function warmCloudSightBase(baseUrl) {
+  const attempts = Number(process.env.CLOUDSIGHT_WAKE_ATTEMPTS || DEFAULT_WAKE_ATTEMPTS);
+  if (!Number.isFinite(attempts) || attempts <= 0) {
+    return;
+  }
+
+  const endpoint = `${baseUrl.replace(/\/$/, "")}/health`;
+  let lastError;
+  for (let attempt = 1; attempt <= attempts; attempt += 1) {
+    try {
+      const response = await timedFetch(endpoint, { method: "GET" });
+      const text = await response.text();
+      if (response.ok) {
+        return;
+      }
+      lastError = new Error(`CloudSight wake failed: ${response.status} ${renderPayload(safeJson(text), text)}`);
+      if (!shouldRetry(response.status, text)) {
+        return;
+      }
+    } catch (error) {
+      lastError = error instanceof Error ? error : new Error(String(error));
+      if (!shouldRetryNetworkError(lastError)) {
+        return;
+      }
+    }
+
+    if (attempt < attempts) {
+      await sleep(10000 * attempt);
+    }
+  }
+
+  if (lastError) {
+    throw lastError;
+  }
 }
 function directUsageFallbackAllowed() {
   const explicit = String(process.env.CLOUDSIGHT_ALLOW_DIRECT_USAGE_FALLBACK || "").trim().toLowerCase();
