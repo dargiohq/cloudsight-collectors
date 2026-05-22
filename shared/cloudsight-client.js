@@ -2,8 +2,8 @@ import { buildCollectorBatch } from "./contract.js";
 
 let dispatchQueue = Promise.resolve();
 let nextDispatchAt = 0;
-const DEFAULT_FETCH_TIMEOUT_MS = 120000;
-const DEFAULT_DISPATCH_ATTEMPTS = 3;
+const DEFAULT_FETCH_TIMEOUT_MS = 180000;
+const DEFAULT_DISPATCH_ATTEMPTS = 5;
 
 function required(name, value) {
   if (!value) {
@@ -149,7 +149,7 @@ async function performCollectorPost({
       }
     }
 
-    if (attempt === maxAttempts || !shouldBackoff || (directUsageFallbackAllowed() && attempt >= 2)) {
+    if (attempt === maxAttempts || !shouldBackoff) {
       break;
     }
 
@@ -194,13 +194,7 @@ async function discoverCandidateBaseUrls(baseUrl) {
 }
 function directUsageFallbackAllowed() {
   const explicit = String(process.env.CLOUDSIGHT_ALLOW_DIRECT_USAGE_FALLBACK || "").trim().toLowerCase();
-  if (explicit === "true") {
-    return true;
-  }
-  if (explicit === "false") {
-    return false;
-  }
-  return Boolean(process.env.CLOUDSIGHT_API_KEY);
+  return explicit === "true";
 }
 
 function isRetryableFailure(error, httpStatus, payload) {
