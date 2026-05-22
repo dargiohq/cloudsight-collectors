@@ -73,17 +73,22 @@ function publicFallbackBaseUrl(baseUrl) {
   return "https://dargio-cloudsight-backend.onrender.com";
 }
 
-function derivedInternalBaseUrl(baseUrl) {
+function derivedInternalBaseUrls(baseUrl) {
+  const candidates = [];
   const configured = String(process.env.CLOUDSIGHT_INTERNAL_BASE_URL || "").trim();
   if (configured) {
-    return configured;
+    candidates.push(configured);
   }
 
   const normalized = String(baseUrl || "").trim().replace(/\/$/, "");
   if (/^https:\/\/dargio-cloudsight-backend\.onrender\.com$/i.test(normalized)) {
-    return "http://dargio-cloudsight-backend-discovery:10000";
+    candidates.push(
+      "http://dargio-cloudsight-backend-discovery:10000",
+      "http://dargio-cloudsight-backend:10000",
+      "http://dargio-cloudsight-backend:8080"
+    );
   }
-  return "";
+  return [...new Set(candidates.filter(Boolean))];
 }
 
 async function performCollectorPost({
@@ -96,6 +101,7 @@ async function performCollectorPost({
   const maxAttempts = Number(process.env.CLOUDSIGHT_DISPATCH_ATTEMPTS || DEFAULT_DISPATCH_ATTEMPTS);
   const candidates = await discoverCandidateBaseUrls(baseUrl);
   const attemptedCandidates = [];
+  const candidateErrors = [];
   let lastFailure;
   let lastPayload;
   let lastEndpoint = `${String(baseUrl || "").replace(/\/$/, "")}/api/collector/events`;
@@ -133,11 +139,18 @@ async function performCollectorPost({
             endpoint,
             attempts: attempt,
             candidatesTried: [...new Set(attemptedCandidates)],
+            candidateErrors,
             response: payload
           };
         }
 
         lastFailure = new Error(`CloudSight collector ingestion failed: ${response.status} ${renderPayload(payload, text)}`);
+        candidateErrors.push({
+          endpoint,
+          attempt,
+          httpStatus: response.status,
+          error: lastFailure.message
+        });
         if (shouldRetry(response.status, text)) {
           shouldBackoff = true;
           retryAfterHeader = retryAfterHeader || response.headers.get("retry-after");
@@ -149,12 +162,18 @@ async function performCollectorPost({
           endpoint,
           attempts: attempt,
           candidatesTried: [...new Set(attemptedCandidates)],
+          candidateErrors,
           httpStatus: response.status,
           error: lastFailure.message,
           response: payload
         };
       } catch (error) {
         lastFailure = error instanceof Error ? error : new Error(String(error));
+        candidateErrors.push({
+          endpoint,
+          attempt,
+          error: lastFailure.message
+        });
         if (shouldRetryNetworkError(lastFailure)) {
           shouldBackoff = true;
           continue;
@@ -165,6 +184,7 @@ async function performCollectorPost({
           endpoint,
           attempts: attempt,
           candidatesTried: [...new Set(attemptedCandidates)],
+          candidateErrors,
           error: lastFailure.message,
           response: lastPayload ?? {}
         };
@@ -190,6 +210,7 @@ async function performCollectorPost({
     endpoint: lastEndpoint,
     attempts: maxAttempts,
     candidatesTried: [...new Set(attemptedCandidates)],
+    candidateErrors,
     httpStatus: lastHttpStatus,
     error: lastFailure?.message ?? "CloudSight collector ingestion failed",
     response: lastPayload ?? {}
@@ -199,12 +220,10 @@ async function performCollectorPost({
 async function discoverCandidateBaseUrls(baseUrl) {
   const configuredBaseUrl = String(baseUrl || "").replace(/\/$/, "");
   const publicBaseUrl = publicFallbackBaseUrl(baseUrl).replace(/\/$/, "");
-  const configuredInternalBaseUrl = derivedInternalBaseUrl(baseUrl).replace(/\/$/, "");
+  const configuredInternalBaseUrls = derivedInternalBaseUrls(baseUrl).map((value) => value.replace(/\/$/, ""));
   const candidates = [];
 
-  if (configuredInternalBaseUrl) {
-    candidates.push(configuredInternalBaseUrl);
-  }
+  candidates.push(...configuredInternalBaseUrls);
 
   if (configuredBaseUrl) {
     candidates.push(configuredBaseUrl);
