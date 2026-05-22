@@ -271,7 +271,10 @@ function warmCloudSightEnabled() {
 }
 function directUsageFallbackAllowed() {
   const explicit = String(process.env.CLOUDSIGHT_ALLOW_DIRECT_USAGE_FALLBACK || "").trim().toLowerCase();
-  return explicit === "true";
+  if (explicit === "false") {
+    return false;
+  }
+  return true;
 }
 
 function isRetryableFailure(error, httpStatus, payload) {
