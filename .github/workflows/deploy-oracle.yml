@@ -8,7 +8,7 @@ permissions:
   contents: read
 
 env:
-  ORACLE_HOST: 129.213.111.220
+  ORACLE_HOST: 132.145.144.226
   ORACLE_USER: ubuntu
   REPO_NAME: cloudsight-collectors
   ARCHIVE_NAME: cloudsight-collectors.tar.gz
