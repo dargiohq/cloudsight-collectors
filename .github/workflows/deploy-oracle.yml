@@ -1,14 +1,16 @@
 name: Deploy Oracle Collectors
-# Auto-deploys Oracle collectors on main pushes.
 
 on:
+  push:
+    branches:
+      - main
   workflow_dispatch:
 
 permissions:
   contents: read
 
 env:
-  ORACLE_HOST: 132.145.144.226
+  ORACLE_HOST: ${{ secrets.ORACLE_HOST || '129.158.54.236' }}
   ORACLE_USER: ubuntu
   REPO_NAME: cloudsight-collectors
   ARCHIVE_NAME: cloudsight-collectors.tar.gz
@@ -30,6 +32,10 @@ jobs:
 
       - name: Configure SSH
         run: |
+          test -n "${{ secrets.ORACLE_SSH_KEY }}" || {
+            echo "Missing required repository secret ORACLE_SSH_KEY"
+            exit 1
+          }
           mkdir -p ~/.ssh
           cat <<'EOF' > ~/.ssh/oracle_deploy_key
           ${{ secrets.ORACLE_SSH_KEY }}
@@ -55,16 +61,17 @@ jobs:
 
             mkdir -p "$ROOT/$REPO"
             tar -xzf "$ARCHIVE" -C "$STAGE"
-            rsync -a --delete "$STAGE"/ "$ROOT/$REPO"/
+            rsync -a --delete --exclude .git "$STAGE"/ "$ROOT/$REPO"/
             rm -rf "$STAGE" "$ARCHIVE"
 
             cd "$ROOT/oracle-cloudsight-stack"
-            docker compose build collector-aws collector-gcp collector-azure
-            docker compose up -d collector-aws collector-gcp collector-azure
-            docker compose ps collector-aws collector-gcp collector-azure
+            docker compose build collector-aws collector-gcp collector-azure collector-openai
+            docker compose up -d collector-aws collector-gcp collector-azure collector-openai
+            docker compose ps collector-aws collector-gcp collector-azure collector-openai
 
             docker compose exec -T collector-aws node -e "fetch(\"http://127.0.0.1:9093/health\").then(async (response) => { if (!response.ok) { throw new Error(await response.text()); } console.log(await response.text()); }).catch((error) => { console.error(error); process.exit(1); })"
             docker compose exec -T collector-gcp node -e "fetch(\"http://127.0.0.1:9094/health\").then(async (response) => { if (!response.ok) { throw new Error(await response.text()); } console.log(await response.text()); }).catch((error) => { console.error(error); process.exit(1); })"
             docker compose exec -T collector-azure node -e "fetch(\"http://127.0.0.1:9095/health\").then(async (response) => { if (!response.ok) { throw new Error(await response.text()); } console.log(await response.text()); }).catch((error) => { console.error(error); process.exit(1); })"
+            docker compose exec -T collector-openai node -e "fetch(\"http://127.0.0.1:9096/health\").then(async (response) => { if (!response.ok) { throw new Error(await response.text()); } console.log(await response.text()); }).catch((error) => { console.error(error); process.exit(1); })"
           '
           EOF
