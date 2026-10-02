@@ -154,7 +154,8 @@ export async function enrichAwsMetricSummary(event, context = {}) {
     return { ...event, requests: latestValue(payload, "requests"), egressGb: latestValue(payload, "egressGb") / (1024 ** 3) };
   }
   if (metricType === "rds-summary") {
-    return { ...event, instanceHours: latestValue(payload, "cpuUnits") / 100 };
+    const services = event.discoveryInventory?.services || {};
+    return { ...event, instanceHours: latestValue(payload, "cpuUnits") / 100, hasAurora: Number(services.aurora || 0) > 0 };
   }
   if (metricType === "queueing-summary") {
     return { ...event, sqsRequests: latestValue(payload, "sqsRequests"), snsPublishes: latestValue(payload, "snsPublishes") };

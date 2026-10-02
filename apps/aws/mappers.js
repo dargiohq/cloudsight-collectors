@@ -42,6 +42,16 @@ function eventBridgeS3ToEvent(payload, context) {
   });
 }
 
+function discoveryTags(payload, serviceFamily, context) {
+  const inventory = payload.discoveryInventory || {};
+  return {
+    serviceFamily,
+    environment: context.environment || "",
+    providerAccount: context.accountId || "",
+    region: payload.regionCode || context.regionCode || ""
+  };
+}
+
 function metricSummaryToEvent(payload, context) {
   const timestamp = payload.timestamp || new Date().toISOString();
   const regionCode = payload.regionCode || context.regionCode;
@@ -58,7 +68,7 @@ function metricSummaryToEvent(payload, context) {
         sourceReference: "lambda-summary",
         regionCode,
         deploymentEnvironment: context.environment,
-        tags: { serviceFamily: "Lambda", environment: context.environment || "" }
+        tags: discoveryTags(payload, "Lambda", context)
       });
     case "api-gateway-summary":
       return buildCollectorEvent({
@@ -72,7 +82,7 @@ function metricSummaryToEvent(payload, context) {
         sourceReference: "api-gateway-summary",
         regionCode,
         deploymentEnvironment: context.environment,
-        tags: { serviceFamily: "API Gateway", environment: context.environment || "" }
+        tags: discoveryTags(payload, "API Gateway", context)
       });
     case "ec2-ebs-summary":
       return buildCollectorEvent({
@@ -86,7 +96,7 @@ function metricSummaryToEvent(payload, context) {
         sourceReference: "ec2-ebs-summary",
         regionCode,
         deploymentEnvironment: context.environment,
-        tags: { serviceFamily: "EC2/EBS", environment: context.environment || "" }
+        tags: discoveryTags(payload, "EC2/EBS", context)
       });
     case "dynamodb-summary":
       return buildCollectorEvent({
@@ -100,7 +110,7 @@ function metricSummaryToEvent(payload, context) {
         sourceReference: "dynamodb-summary",
         regionCode,
         deploymentEnvironment: context.environment,
-        tags: { serviceFamily: "DynamoDB", environment: context.environment || "" }
+        tags: discoveryTags(payload, "DynamoDB", context)
       });
     case "cloudfront-summary":
       return buildCollectorEvent({
@@ -114,7 +124,7 @@ function metricSummaryToEvent(payload, context) {
         sourceReference: "cloudfront-summary",
         regionCode,
         deploymentEnvironment: context.environment,
-        tags: { serviceFamily: "CloudFront", environment: context.environment || "" }
+        tags: discoveryTags(payload, "CloudFront", context)
       });
     case "rds-summary":
       return buildCollectorEvent({
@@ -125,10 +135,10 @@ function metricSummaryToEvent(payload, context) {
         outputUnits: 0,
         timestamp,
         sourceType: "CLOUDWATCH_METRIC",
-        sourceReference: "rds-summary",
+        sourceReference: payload.hasAurora ? "aurora-summary" : "rds-summary",
         regionCode,
         deploymentEnvironment: context.environment,
-        tags: { serviceFamily: "RDS", environment: context.environment || "" }
+        tags: discoveryTags(payload, payload.hasAurora ? "Aurora" : "RDS", context)
       });
     case "queueing-summary":
       return buildCollectorEvent({
@@ -142,7 +152,7 @@ function metricSummaryToEvent(payload, context) {
         sourceReference: "queueing-summary",
         regionCode,
         deploymentEnvironment: context.environment,
-        tags: { serviceFamily: "SQS/SNS", environment: context.environment || "" }
+        tags: discoveryTags(payload, "SQS/SNS", context)
       });
     default:
       throw new Error(`Unsupported AWS metricType: ${payload.metricType}`);

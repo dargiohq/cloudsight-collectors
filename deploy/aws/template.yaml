@@ -61,6 +61,7 @@ Resources:
           COLLECTOR_ENVIRONMENT: !Ref CollectorEnvironment
           COLLECTOR_REGIONS: !Join [",", !Ref CollectorRegions]
           AWS_ACCOUNT_ID: !Ref CloudAccountLabel
+          CLOUDSIGHT_AWS_DISCOVERY: "true"
       Policies:
         - AWSLambdaBasicExecutionRole
         - Statement:
@@ -69,6 +70,15 @@ Resources:
                 - cloudwatch:GetMetricData
                 - cloudwatch:GetMetricStatistics
                 - cloudwatch:ListMetrics
+                - lambda:ListFunctions
+                - dynamodb:ListTables
+                - rds:DescribeDBInstances
+                - rds:DescribeDBClusters
+                - sqs:ListQueues
+                - sns:ListTopics
+                - apigateway:GET
+                - s3:ListAllMyBuckets
+                - cloudfront:ListDistributions
               Resource: "*"
       Events:
         S3ObjectEvents:

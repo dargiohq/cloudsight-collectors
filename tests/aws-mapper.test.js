@@ -32,3 +32,39 @@ test("maps AWS queue summaries into a CloudSight batch", () => {
   assert.equal(batch.events[0].inputEndpoint, "sqs-request");
   assert.equal(batch.events[0].outputEndpoint, "sns-publish-request");
 });
+
+import { shouldRunMetricModule } from "../apps/aws/discovery.js";
+
+test("AWS discovery runs the Aurora/RDS module when Aurora is discovered", () => {
+  const inventory = {
+    services: { aurora: 1, rds: 0, dynamodb: 0 },
+    errors: []
+  };
+
+  assert.equal(shouldRunMetricModule("rds-summary", inventory), true);
+  assert.equal(shouldRunMetricModule("dynamodb-summary", inventory), false);
+});
+
+test("AWS discovery does not skip a module when discovery had an AWS permission error", () => {
+  const inventory = {
+    services: { dynamodb: 0 },
+    errors: [{ service: "dynamodb", region: "us-east-1", message: "AccessDenied" }]
+  };
+
+  assert.equal(shouldRunMetricModule("dynamodb-summary", inventory), true);
+});
+
+test("maps Aurora-discovered RDS summaries without changing the CloudSight event contract", () => {
+  const batch = mapAwsPayloadToBatch({
+    metricType: "rds-summary",
+    instanceHours: 2,
+    hasAurora: true,
+    timestamp: "2026-05-09T10:00:00Z",
+    discoveryInventory: { services: { aurora: 1 } }
+  }, { collectorName: "aws-prod-collector", environment: "Production", accountId: "prod-account" });
+
+  assert.equal(batch.events[0].inputEndpoint, "rds-db-instance-hour");
+  assert.equal(batch.events[0].sourceReference, "aurora-summary");
+  assert.equal(batch.events[0].tags.serviceFamily, "Aurora");
+  assert.equal(batch.events[0].tags.providerAccount, "prod-account");
+});
