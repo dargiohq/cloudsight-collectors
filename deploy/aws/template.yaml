@@ -1,15 +1,46 @@
 AWSTemplateFormatVersion: '2010-09-09'
 Transform: AWS::Serverless-2016-10-31
-Description: CloudSight AWS collector
+Description: CloudSight AWS collector for one provider environment, account, and region group
 
 Parameters:
   CloudSightBaseUrl:
     Type: String
+    Default: https://api.cloudsight.dargio.in
+    Description: CloudSight API base URL.
   CloudSightApiKey:
     Type: String
+    NoEcho: true
+    Default: ""
+    Description: Optional workspace API key fallback. Prefer collector ID/key below.
+  CloudSightCollectorId:
+    Type: String
+    Default: ""
+    Description: Signed CloudSight collector ID for this target.
+  CloudSightCollectorKey:
+    Type: String
+    NoEcho: true
+    Default: ""
+    Description: Signed CloudSight collector key for this target.
   CollectorName:
     Type: String
-    Default: aws-collector
+    Default: aws-production-us-east-1
+    Description: Human-readable collector name shown in CloudSight.
+  CollectorEnvironment:
+    Type: String
+    Default: Production
+    Description: Customer environment name, for example Production, Staging, Sandbox, or a custom value.
+  CollectorRegions:
+    Type: CommaDelimitedList
+    Default: us-east-1
+    Description: Region group this collector represents. Deploy this stack in the primary region from the list.
+  CloudAccountLabel:
+    Type: String
+    Default: Production Account
+    Description: Friendly account label or AWS account identifier.
+  MetricScheduleRate:
+    Type: String
+    Default: rate(5 minutes)
+    Description: EventBridge schedule for CloudWatch metric summary collection hooks.
 
 Resources:
   CloudSightAwsCollector:
@@ -18,17 +49,83 @@ Resources:
       Runtime: nodejs20.x
       Handler: apps/aws/handler.handler
       CodeUri: ../../
-      Timeout: 30
+      Timeout: 60
       MemorySize: 256
       Environment:
         Variables:
           CLOUDSIGHT_BASE_URL: !Ref CloudSightBaseUrl
           CLOUDSIGHT_API_KEY: !Ref CloudSightApiKey
+          CLOUDSIGHT_COLLECTOR_ID: !Ref CloudSightCollectorId
+          CLOUDSIGHT_COLLECTOR_KEY: !Ref CloudSightCollectorKey
           COLLECTOR_NAME: !Ref CollectorName
-          COLLECTOR_ENVIRONMENT: Production
+          COLLECTOR_ENVIRONMENT: !Ref CollectorEnvironment
+          COLLECTOR_REGIONS: !Join [",", !Ref CollectorRegions]
+          AWS_ACCOUNT_ID: !Ref CloudAccountLabel
       Policies:
         - AWSLambdaBasicExecutionRole
+        - Statement:
+            - Effect: Allow
+              Action:
+                - cloudwatch:GetMetricData
+                - cloudwatch:GetMetricStatistics
+                - cloudwatch:ListMetrics
+              Resource: "*"
+      Events:
+        S3ObjectEvents:
+          Type: EventBridgeRule
+          Properties:
+            Pattern:
+              source:
+                - aws.s3
+              detail-type:
+                - Object Created
+        LambdaMetricSummary:
+          Type: Schedule
+          Properties:
+            Schedule: !Ref MetricScheduleRate
+            Input: !Sub |
+              {"metricType":"lambda-summary","regionCode":"${AWS::Region}","batchReference":"${CollectorName}-lambda-${AWS::Region}"}
+        ApiGatewayMetricSummary:
+          Type: Schedule
+          Properties:
+            Schedule: !Ref MetricScheduleRate
+            Input: !Sub |
+              {"metricType":"api-gateway-summary","regionCode":"${AWS::Region}","batchReference":"${CollectorName}-api-gateway-${AWS::Region}"}
+        Ec2EbsMetricSummary:
+          Type: Schedule
+          Properties:
+            Schedule: !Ref MetricScheduleRate
+            Input: !Sub |
+              {"metricType":"ec2-ebs-summary","regionCode":"${AWS::Region}","batchReference":"${CollectorName}-ec2-ebs-${AWS::Region}"}
+        DynamoDbMetricSummary:
+          Type: Schedule
+          Properties:
+            Schedule: !Ref MetricScheduleRate
+            Input: !Sub |
+              {"metricType":"dynamodb-summary","regionCode":"${AWS::Region}","batchReference":"${CollectorName}-dynamodb-${AWS::Region}"}
+        CloudFrontMetricSummary:
+          Type: Schedule
+          Properties:
+            Schedule: !Ref MetricScheduleRate
+            Input: !Sub |
+              {"metricType":"cloudfront-summary","regionCode":"global","batchReference":"${CollectorName}-cloudfront"}
+        RdsMetricSummary:
+          Type: Schedule
+          Properties:
+            Schedule: !Ref MetricScheduleRate
+            Input: !Sub |
+              {"metricType":"rds-summary","regionCode":"${AWS::Region}","batchReference":"${CollectorName}-rds-${AWS::Region}"}
+        QueueingMetricSummary:
+          Type: Schedule
+          Properties:
+            Schedule: !Ref MetricScheduleRate
+            Input: !Sub |
+              {"metricType":"queueing-summary","regionCode":"${AWS::Region}","batchReference":"${CollectorName}-queueing-${AWS::Region}"}
 
 Outputs:
   CollectorFunctionName:
     Value: !Ref CloudSightAwsCollector
+  CollectorIdentity:
+    Value: !Sub "${CollectorName} / ${CollectorEnvironment} / ${CloudAccountLabel} / ${AWS::Region}"
+  CloudSightCollectorId:
+    Value: !Ref CloudSightCollectorId
