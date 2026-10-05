@@ -1,175 +1,27 @@
-import crypto from "node:crypto";
+import { LambdaClient, ListFunctionsCommand } from "@aws-sdk/client-lambda";
+import { DynamoDBClient, ListTablesCommand } from "@aws-sdk/client-dynamodb";
+import { RDSClient, DescribeDBInstancesCommand, DescribeDBClustersCommand } from "@aws-sdk/client-rds";
+import { SQSClient, ListQueuesCommand } from "@aws-sdk/client-sqs";
+import { SNSClient, ListTopicsCommand } from "@aws-sdk/client-sns";
+import { APIGatewayClient, GetRestApisCommand } from "@aws-sdk/client-api-gateway";
+import { S3Client, ListBucketsCommand } from "@aws-sdk/client-s3";
+import { CloudFrontClient, ListDistributionsCommand } from "@aws-sdk/client-cloudfront";
 
-const AWS_JSON_TARGETS = {
-  lambda: {
-    service: "lambda",
-    target: "ListFunctions",
-    version: "20150331",
-    namespace: "AWS/Lambda",
-    body: {}
-  },
-  dynamodb: {
-    service: "dynamodb",
-    target: "DynamoDB_20120810.ListTables",
-    namespace: "AWS/DynamoDB",
-    body: {}
-  },
-  rds: {
-    service: "rds",
-    target: "AmazonRDSv19.DescribeDBInstances",
-    namespace: "AWS/RDS",
-    body: {}
-  },
-  sqs: {
-    service: "sqs",
-    target: "AmazonSQS.ListQueues",
-    namespace: "AWS/SQS",
-    body: {}
-  },
-  sns: {
-    service: "sns",
-    target: "SNS_20100331.ListTopics",
-    namespace: "AWS/SNS",
-    body: {}
-  },
-  apigateway: {
-    service: "apigateway",
-    target: "BackplaneControlService.GetRestApis",
-    namespace: "AWS/ApiGateway",
-    body: {}
-  }
-};
-
+const SUPPORTED_DISCOVERY_SERVICES = ["s3", "lambda", "dynamodb", "rds", "aurora", "sqs", "sns", "apigateway", "cloudfront"];
 const DISCOVERY_CACHE_TTL_MS = 10 * 60 * 1000;
 let cachedInventory;
 let cachedInventoryKey = "";
 let cachedInventoryAt = 0;
-
-const SUPPORTED_DISCOVERY_SERVICES = [
-  "s3",
-  "lambda",
-  "dynamodb",
-  "rds",
-  "aurora",
-  "sqs",
-  "sns",
-  "apigateway",
-  "cloudfront"
-];
-
-function hmac(key, value, encoding) {
-  return crypto.createHmac("sha256", key).update(value, "utf8").digest(encoding);
-}
-
-function hash(value) {
-  return crypto.createHash("sha256").update(value, "utf8").digest("hex");
-}
-
-function amzDate(date = new Date()) {
-  return date.toISOString().replace(/[:-]|\.\d{3}/g, "");
-}
-
-function dateStamp(amz) {
-  return amz.slice(0, 8);
-}
-
-async function lambdaCredentials() {
-  if (process.env.AWS_ACCESS_KEY_ID && process.env.AWS_SECRET_ACCESS_KEY) {
-    return {
-      accessKeyId: process.env.AWS_ACCESS_KEY_ID,
-      secretAccessKey: process.env.AWS_SECRET_ACCESS_KEY,
-      sessionToken: process.env.AWS_SESSION_TOKEN
-    };
-  }
-  const relativeUri = process.env.AWS_CONTAINER_CREDENTIALS_RELATIVE_URI;
-  if (!relativeUri) {
-    throw new Error("AWS credentials are not available to the collector runtime");
-  }
-  const response = await fetch(`http://169.254.170.2${relativeUri}`);
-  if (!response.ok) {
-    throw new Error(`Could not load AWS runtime credentials: ${response.status}`);
-  }
-  const payload = await response.json();
-  return {
-    accessKeyId: payload.AccessKeyId,
-    secretAccessKey: payload.SecretAccessKey,
-    sessionToken: payload.Token
-  };
-}
-
-async function signedJsonPost({ region, service, host, target, body = {} }) {
-  const now = amzDate();
-  const scopeDate = dateStamp(now);
-  const credentials = await lambdaCredentials();
-  const payload = JSON.stringify(body);
-  const headers = {
-    "content-type": "application/x-amz-json-1.1",
-    host,
-    "x-amz-date": now,
-    "x-amz-target": target,
-    ...(credentials.sessionToken ? { "x-amz-security-token": credentials.sessionToken } : {})
-  };
-  const signedHeaderNames = Object.keys(headers).sort();
-  const canonicalHeaders = signedHeaderNames.map((name) => `${name}:${String(headers[name]).trim()}\n`).join("");
-  const signedHeaders = signedHeaderNames.join(";");
-  const canonicalRequest = ["POST", "/", "", canonicalHeaders, signedHeaders, hash(payload)].join("\n");
-  const credentialScope = `${scopeDate}/${region}/${service}/aws4_request`;
-  const stringToSign = ["AWS4-HMAC-SHA256", now, credentialScope, hash(canonicalRequest)].join("\n");
-  const kDate = hmac(`AWS4${credentials.secretAccessKey}`, scopeDate);
-  const kRegion = hmac(kDate, region);
-  const kService = hmac(kRegion, service);
-  const kSigning = hmac(kService, "aws4_request");
-  const signature = hmac(kSigning, stringToSign, "hex");
-  const authorization = `AWS4-HMAC-SHA256 Credential=${credentials.accessKeyId}/${credentialScope}, SignedHeaders=${signedHeaders}, Signature=${signature}`;
-  const response = await fetch(`https://${host}/`, {
-    method: "POST",
-    headers: { ...headers, authorization },
-    body: payload
-  });
-  const text = await response.text();
-  if (!response.ok) {
-    throw new Error(`${service} discovery failed: ${response.status} ${text}`);
-  }
-  return text ? JSON.parse(text) : {};
-}
-
-async function signedQueryGet({ region, service, host, action, params = {} }) {
-  const now = amzDate();
-  const scopeDate = dateStamp(now);
-  const credentials = await lambdaCredentials();
-  const search = new URLSearchParams({ Action: action, Version: params.Version, ...params });
-  const query = [...search.entries()]
-    .filter(([key, value]) => key !== "Version" || value)
-    .sort(([left], [right]) => left.localeCompare(right))
-    .map(([key, value]) => `${encodeURIComponent(key)}=${encodeURIComponent(value)}`)
-    .join("&");
-  const headers = {
-    host,
-    "x-amz-date": now,
-    ...(credentials.sessionToken ? { "x-amz-security-token": credentials.sessionToken } : {})
-  };
-  const signedHeaderNames = Object.keys(headers).sort();
-  const canonicalHeaders = signedHeaderNames.map((name) => `${name}:${String(headers[name]).trim()}\n`).join("");
-  const signedHeaders = signedHeaderNames.join(";");
-  const canonicalRequest = ["GET", "/", query, canonicalHeaders, signedHeaders, hash("")].join("\n");
-  const credentialScope = `${scopeDate}/${region}/${service}/aws4_request`;
-  const stringToSign = ["AWS4-HMAC-SHA256", now, credentialScope, hash(canonicalRequest)].join("\n");
-  const kDate = hmac(`AWS4${credentials.secretAccessKey}`, scopeDate);
-  const kRegion = hmac(kDate, region);
-  const kService = hmac(kRegion, service);
-  const kSigning = hmac(kService, "aws4_request");
-  const signature = hmac(kSigning, stringToSign, "hex");
-  const authorization = `AWS4-HMAC-SHA256 Credential=${credentials.accessKeyId}/${credentialScope}, SignedHeaders=${signedHeaders}, Signature=${signature}`;
-  const response = await fetch(`https://${host}/?${query}`, {
-    method: "GET",
-    headers: { ...headers, authorization }
-  });
-  const text = await response.text();
-  if (!response.ok) {
-    throw new Error(`${service} discovery failed: ${response.status} ${text}`);
-  }
-  return text;
-}
+const operations = {
+  lambda: [LambdaClient, ListFunctionsCommand, "Marker", "NextMarker"],
+  dynamodb: [DynamoDBClient, ListTablesCommand, "ExclusiveStartTableName", "LastEvaluatedTableName"],
+  rds: [RDSClient, DescribeDBInstancesCommand, "Marker", "Marker"],
+  sqs: [SQSClient, ListQueuesCommand, "NextToken", "NextToken"],
+  sns: [SNSClient, ListTopicsCommand, "NextToken", "NextToken"],
+  apigateway: [APIGatewayClient, GetRestApisCommand, "position", "position"],
+  s3: [S3Client, ListBucketsCommand, "ContinuationToken", "ContinuationToken"],
+  cloudfront: [CloudFrontClient, ListDistributionsCommand, "Marker", "NextMarker"]
+};
 
 function resourcesFromPayload(service, payload, region) {
   if (service === "lambda") {
@@ -201,25 +53,6 @@ function resourcesFromPayload(service, payload, region) {
     return (payload.items || payload.Items || []).map((item) => ({ service: "apigateway", serviceFamily: "API Gateway", resourceId: item.id || item.name, region }));
   }
   return [];
-}
-
-async function discoverJsonService(service, region) {
-  const config = AWS_JSON_TARGETS[service];
-  const host = `${config.service}.${region}.amazonaws.com`;
-  const payload = await signedJsonPost({ region, service: config.service, host, target: config.target, body: config.body });
-  return resourcesFromPayload(service, payload, region);
-}
-
-async function discoverS3(region) {
-  const text = await signedQueryGet({ region: "us-east-1", service: "s3", host: "s3.amazonaws.com", action: "ListAllMyBuckets", params: {} });
-  const names = [...text.matchAll(/<Name>([^<]+)<\/Name>/g)].map((match) => match[1]);
-  return names.map((name) => ({ service: "s3", serviceFamily: "S3", resourceId: name, region: "global" }));
-}
-
-async function discoverCloudFront() {
-  const text = await signedQueryGet({ region: "us-east-1", service: "cloudfront", host: "cloudfront.amazonaws.com", action: "ListDistributions", params: { Version: "2020-05-31" } });
-  const ids = [...text.matchAll(/<Id>([^<]+)<\/Id>/g)].map((match) => match[1]);
-  return ids.map((id) => ({ service: "cloudfront", serviceFamily: "CloudFront", resourceId: id, region: "global" }));
 }
 
 function summarize(resources, regions) {
@@ -260,52 +93,59 @@ export function shouldRunMetricModule(metricType, inventory) {
   return true;
 }
 
-export async function discoverAwsInventory({ regions = [], fetcher, useCache = !fetcher } = {}) {
-  const cacheKey = (regions || []).join(",") || process.env.AWS_REGION || "us-east-1";
-  if (useCache && cachedInventory && cachedInventoryKey === cacheKey && Date.now() - cachedInventoryAt < DISCOVERY_CACHE_TTL_MS) {
-    return cachedInventory;
-  }
-  const originalFetch = globalThis.fetch;
-  if (fetcher) {
-    globalThis.fetch = fetcher;
-  }
-  const regionList = [...new Set((regions.length ? regions : [process.env.AWS_REGION || "us-east-1"])
-    .map((region) => String(region || "").trim())
-    .filter(Boolean))];
+export async function discoverAwsInventory({ regions = [], clientFactory, useCache = !clientFactory } = {}) {
+  const regionList = [...new Set((regions.length ? regions : [process.env.AWS_REGION || "us-east-1"]).map(r => String(r).trim()).filter(Boolean))];
+  const cacheKey = regionList.join(",");
+  if (useCache && cachedInventory && cachedInventoryKey === cacheKey && Date.now() - cachedInventoryAt < DISCOVERY_CACHE_TTL_MS) return cachedInventory;
   const resources = [];
   const errors = [];
-  try {
-    for (const region of regionList) {
-      for (const service of ["lambda", "dynamodb", "rds", "sqs", "sns", "apigateway"]) {
-        try {
-          resources.push(...await discoverJsonService(service, region));
-        } catch (error) {
-          errors.push({ service, region, message: error instanceof Error ? error.message : String(error) });
+  for (const [service, [Client, Command, requestToken, responseToken]] of Object.entries(operations)) {
+    const serviceRegions = ["s3", "cloudfront"].includes(service) ? ["us-east-1"] : regionList;
+    for (const region of serviceRegions) {
+      const client = clientFactory ? clientFactory(service, region) : new Client({ region, maxAttempts: 2 });
+      try {
+        let token;
+        const seenTokens = new Set();
+        do {
+          const input = { ...(token ? { [requestToken]: token } : {}), ...(service === "sqs" ? { MaxResults: 1000 } : {}) };
+          const payload = await client.send(new Command(input));
+          if (service === "s3") {
+            resources.push(...(payload.Buckets || []).map(b => ({ service, serviceFamily: "S3", resourceId: b.Name, region: b.BucketRegion || "global" })));
+          } else if (service === "cloudfront") {
+            resources.push(...(payload.DistributionList?.Items || []).map(d => ({ service, serviceFamily: "CloudFront", resourceId: d.Id, region: "global" })));
+          } else {
+            resources.push(...resourcesFromPayload(service, payload, region));
+          }
+          token = service === "cloudfront" ? payload.DistributionList?.NextMarker : payload[responseToken];
+          if (token && seenTokens.has(token)) throw new Error("Repeated pagination token from AWS");
+          if (token) seenTokens.add(token);
+        } while (token);
+        // Clusters without instances (including serverless Aurora) must also be visible.
+        if (service === "rds") {
+          let marker;
+          const seen = new Set();
+          do {
+            const page = await client.send(new DescribeDBClustersCommand(marker ? { Marker: marker } : {}));
+            resources.push(...(page.DBClusters || []).map(c => ({ service: String(c.Engine).includes("aurora") ? "aurora" : "rds", serviceFamily: String(c.Engine).includes("aurora") ? "Aurora" : "RDS", resourceId: c.DBClusterArn || c.DBClusterIdentifier, region, engine: c.Engine })));
+            marker = page.Marker;
+            if (marker && seen.has(marker)) throw new Error("Repeated RDS pagination token");
+            if (marker) seen.add(marker);
+          } while (marker);
         }
+      } catch (error) {
+        errors.push({ service, region, message: error.message });
+      } finally {
+        client.destroy?.();
       }
     }
-    try {
-      resources.push(...await discoverS3(regionList[0]));
-    } catch (error) {
-      errors.push({ service: "s3", region: "global", message: error instanceof Error ? error.message : String(error) });
-    }
-    try {
-      resources.push(...await discoverCloudFront());
-    } catch (error) {
-      errors.push({ service: "cloudfront", region: "global", message: error instanceof Error ? error.message : String(error) });
-    }
-    const inventory = { ...summarize(resources, regionList), errors };
-    if (useCache) {
-      cachedInventory = inventory;
-      cachedInventoryKey = cacheKey;
-      cachedInventoryAt = Date.now();
-    }
-    return inventory;
-  } finally {
-    if (fetcher) {
-      globalThis.fetch = originalFetch;
-    }
   }
+  const inventory = { ...summarize(resources, regionList), errors };
+  if (useCache && !errors.length) {
+    cachedInventory = inventory;
+    cachedInventoryKey = cacheKey;
+    cachedInventoryAt = Date.now();
+  }
+  return inventory;
 }
 
 export function collectorRegionsFromEnvironment(value = process.env.COLLECTOR_REGIONS || process.env.AWS_REGION || "") {

@@ -1,0 +1,23 @@
+{
+  "Version": "2012-10-17",
+  "Statement": [
+    {
+      "Sid": "TemporaryDiscoveryAndBillingTest",
+      "Effect": "Allow",
+      "Action": ["lambda:ListFunctions", "dynamodb:ListTables", "rds:DescribeDBInstances", "rds:DescribeDBClusters", "sqs:ListQueues", "sns:ListTopics", "s3:ListAllMyBuckets", "cloudfront:ListDistributions", "cloudwatch:GetMetricData", "cloudwatch:ListMetrics", "ce:GetCostAndUsage"],
+      "Resource": "*"
+    },
+    {
+      "Sid": "ApiGatewayInventory",
+      "Effect": "Allow",
+      "Action": "apigateway:GET",
+      "Resource": "arn:aws:apigateway:*::/restapis"
+    },
+    {
+      "Sid": "RemoveOnlyOurTestLogGroup",
+      "Effect": "Allow",
+      "Action": "logs:DeleteLogGroup",
+      "Resource": "arn:aws:logs:us-east-1:837501718562:log-group:/aws/lambda/cloudsight-e2e-2026100310-CloudSightCollectorFunct-cD7vdOr6gRWa:*"
+    }
+  ]
+}
