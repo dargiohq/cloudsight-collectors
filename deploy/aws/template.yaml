@@ -70,6 +70,8 @@ Resources:
                 - cloudwatch:GetMetricData
                 - cloudwatch:GetMetricStatistics
                 - cloudwatch:ListMetrics
+                - ec2:DescribeInstances
+                - ec2:DescribeVolumes
                 - lambda:ListFunctions
                 - dynamodb:ListTables
                 - rds:DescribeDBInstances

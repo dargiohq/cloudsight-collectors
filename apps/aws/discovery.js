@@ -1,5 +1,6 @@
 import { LambdaClient, ListFunctionsCommand } from "@aws-sdk/client-lambda";
 import { DynamoDBClient, ListTablesCommand } from "@aws-sdk/client-dynamodb";
+import { EC2Client, DescribeInstancesCommand, DescribeVolumesCommand } from "@aws-sdk/client-ec2";
 import { RDSClient, DescribeDBInstancesCommand, DescribeDBClustersCommand } from "@aws-sdk/client-rds";
 import { SQSClient, ListQueuesCommand } from "@aws-sdk/client-sqs";
 import { SNSClient, ListTopicsCommand } from "@aws-sdk/client-sns";
@@ -7,13 +8,15 @@ import { APIGatewayClient, GetRestApisCommand } from "@aws-sdk/client-api-gatewa
 import { S3Client, ListBucketsCommand } from "@aws-sdk/client-s3";
 import { CloudFrontClient, ListDistributionsCommand } from "@aws-sdk/client-cloudfront";
 
-const SUPPORTED_DISCOVERY_SERVICES = ["s3", "lambda", "dynamodb", "rds", "aurora", "sqs", "sns", "apigateway", "cloudfront"];
+const SUPPORTED_DISCOVERY_SERVICES = ["s3", "lambda", "ec2", "ebs", "dynamodb", "rds", "aurora", "sqs", "sns", "apigateway", "cloudfront"];
 const DISCOVERY_CACHE_TTL_MS = 10 * 60 * 1000;
 let cachedInventory;
 let cachedInventoryKey = "";
 let cachedInventoryAt = 0;
 const operations = {
   lambda: [LambdaClient, ListFunctionsCommand, "Marker", "NextMarker"],
+  ec2: [EC2Client, DescribeInstancesCommand, "NextToken", "NextToken"],
+  ebs: [EC2Client, DescribeVolumesCommand, "NextToken", "NextToken"],
   dynamodb: [DynamoDBClient, ListTablesCommand, "ExclusiveStartTableName", "LastEvaluatedTableName"],
   rds: [RDSClient, DescribeDBInstancesCommand, "Marker", "Marker"],
   sqs: [SQSClient, ListQueuesCommand, "NextToken", "NextToken"],
@@ -25,10 +28,46 @@ const operations = {
 
 function resourcesFromPayload(service, payload, region) {
   if (service === "lambda") {
-    return (payload.Functions || []).map((item) => ({ service: "lambda", serviceFamily: "Lambda", resourceId: item.FunctionArn || item.FunctionName, region }));
+    return (payload.Functions || []).map((item) => ({
+      service: "lambda",
+      serviceFamily: "Lambda",
+      resourceId: item.FunctionArn || item.FunctionName,
+      region,
+      memorySizeMb: Number(item.MemorySize || 128)
+    }));
   }
   if (service === "dynamodb") {
     return (payload.TableNames || []).map((name) => ({ service: "dynamodb", serviceFamily: "DynamoDB", resourceId: name, region }));
+  }
+  if (service === "ec2") {
+    return (payload.Reservations || []).flatMap((reservation) => (reservation.Instances || []))
+      .filter((item) => !["shutting-down", "terminated"].includes(String(item.State?.Name || "").toLowerCase()))
+      .map((item) => {
+        const coreCount = Number(item.CpuOptions?.CoreCount || 0);
+        const threadsPerCore = Number(item.CpuOptions?.ThreadsPerCore || 0);
+        const vcpus = coreCount > 0 && threadsPerCore > 0 ? coreCount * threadsPerCore : 1;
+        return {
+          service: "ec2",
+          serviceFamily: "EC2",
+          resourceId: item.InstanceId,
+          region,
+          instanceType: item.InstanceType,
+          state: item.State?.Name || "unknown",
+          vcpus
+        };
+      });
+  }
+  if (service === "ebs") {
+    return (payload.Volumes || [])
+      .filter((item) => !["deleted", "deleting"].includes(String(item.State || "").toLowerCase()))
+      .map((item) => ({
+        service: "ebs",
+        serviceFamily: "EBS",
+        resourceId: item.VolumeId,
+        region,
+        volumeType: item.VolumeType || "gp3",
+        sizeGiB: Number(item.Size || 0)
+      }));
   }
   if (service === "rds") {
     return (payload.DBInstances || []).map((item) => {
@@ -85,7 +124,7 @@ export function shouldRunMetricModule(metricType, inventory) {
   const services = discoveredServicesFromInventory(inventory);
   if (metricType === "lambda-summary") return services.has("lambda") || discoveryHadError(inventory, "lambda");
   if (metricType === "api-gateway-summary") return services.has("apigateway") || discoveryHadError(inventory, "apigateway");
-  if (metricType === "ec2-ebs-summary") return true;
+  if (metricType === "ec2-ebs-summary") return services.has("ec2") || services.has("ebs") || discoveryHadError(inventory, "ec2") || discoveryHadError(inventory, "ebs");
   if (metricType === "dynamodb-summary") return services.has("dynamodb") || discoveryHadError(inventory, "dynamodb");
   if (metricType === "cloudfront-summary") return services.has("cloudfront") || discoveryHadError(inventory, "cloudfront");
   if (metricType === "rds-summary") return services.has("rds") || services.has("aurora") || discoveryHadError(inventory, "rds");

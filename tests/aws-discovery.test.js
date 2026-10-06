@@ -25,3 +25,32 @@ test("discovery exposes permission failures without declaring empty success", as
   assert.equal(result.errors.length, 1);
   assert.equal(result.errors[0].service, "dynamodb");
 });
+
+test("discovery captures EC2 vCPU and EBS GP3 capacity for metering", async () => {
+  const result = await discoverAwsInventory({ regions: ["us-east-1"], clientFactory: service => ({
+    send: async command => {
+      if (service === "ec2") {
+        return {
+          Reservations: [{
+            Instances: [{
+              InstanceId: "i-123",
+              InstanceType: "m6i.large",
+              State: { Name: "running" },
+              CpuOptions: { CoreCount: 1, ThreadsPerCore: 2 }
+            }]
+          }]
+        };
+      }
+      if (service === "ebs") {
+        return { Volumes: [{ VolumeId: "vol-123", VolumeType: "gp3", Size: 250, State: "in-use" }] };
+      }
+      if (command.constructor.name === "DescribeDBClustersCommand") return {};
+      return {};
+    }, destroy() {}
+  }) });
+
+  assert.equal(result.services.ec2, 1);
+  assert.equal(result.services.ebs, 1);
+  assert.equal(result.resources.find((resource) => resource.service === "ec2").vcpus, 2);
+  assert.equal(result.resources.find((resource) => resource.service === "ebs").sizeGiB, 250);
+});

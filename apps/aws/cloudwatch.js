@@ -8,10 +8,7 @@ const METRIC_QUERIES = {
   "api-gateway-summary": [
     { id: "requests", expression: "SUM(SEARCH('{AWS/ApiGateway,ApiName,Stage,Method,Resource} MetricName=\"Count\"', 'Sum', 300))" }
   ],
-  "ec2-ebs-summary": [
-    { id: "cpuUnits", expression: "SUM(SEARCH('{AWS/EC2,InstanceId} MetricName=\"CPUUtilization\"', 'Average', 300))" },
-    { id: "gp3GbMonth", expression: "SUM(SEARCH('{AWS/EBS,VolumeId} MetricName=\"VolumeReadOps\"', 'Sum', 300))" }
-  ],
+  "ec2-ebs-summary": [],
   "dynamodb-summary": [
     { id: "readUnits", expression: "SUM(SEARCH('{AWS/DynamoDB,TableName} MetricName=\"ConsumedReadCapacityUnits\"', 'Sum', 300))" },
     { id: "writeUnits", expression: "SUM(SEARCH('{AWS/DynamoDB,TableName} MetricName=\"ConsumedWriteCapacityUnits\"', 'Sum', 300))" }
@@ -20,9 +17,7 @@ const METRIC_QUERIES = {
     { id: "requests", expression: "SUM(SEARCH('{AWS/CloudFront,DistributionId,Region} MetricName=\"Requests\"', 'Sum', 300))" },
     { id: "egressGb", expression: "SUM(SEARCH('{AWS/CloudFront,DistributionId,Region} MetricName=\"BytesDownloaded\"', 'Sum', 300))" }
   ],
-  "rds-summary": [
-    { id: "cpuUnits", expression: "SUM(SEARCH('{AWS/RDS,DBInstanceIdentifier} MetricName=\"CPUUtilization\"', 'Average', 300))" }
-  ],
+  "rds-summary": [],
   "queueing-summary": [
     { id: "sqsRequests", expression: "SUM(SEARCH('{AWS/SQS,QueueName} MetricName=\"NumberOfMessagesSent\"', 'Sum', 300))" },
     { id: "snsPublishes", expression: "SUM(SEARCH('{AWS/SNS,TopicName} MetricName=\"NumberOfMessagesPublished\"', 'Sum', 300))" }
@@ -115,11 +110,59 @@ function latestValue(payload, id) {
   return Number.isFinite(value) ? value : 0;
 }
 
+function collectionWindowHours(event) {
+  const minutes = Number(event.windowMinutes || process.env.CLOUDSIGHT_METRIC_WINDOW_MINUTES || 5);
+  return Number.isFinite(minutes) && minutes > 0 ? minutes / 60 : 5 / 60;
+}
+
+function collectionWindowMonthFraction(event) {
+  return collectionWindowHours(event) / (24 * 30);
+}
+
+function resourcesFor(inventory, service) {
+  return (inventory?.resources || []).filter((resource) => resource.service === service);
+}
+
+function sumNumbers(items, field) {
+  return items.reduce((sum, item) => {
+    const value = Number(item?.[field] || 0);
+    return sum + (Number.isFinite(value) ? value : 0);
+  }, 0);
+}
+
+function averageLambdaMemoryGb(inventory) {
+  const lambdas = resourcesFor(inventory, "lambda");
+  if (!lambdas.length) return 0.125;
+  const memoryMb = sumNumbers(lambdas, "memorySizeMb") / lambdas.length;
+  return Math.max(memoryMb || 128, 128) / 1024;
+}
+
 export async function enrichAwsMetricSummary(event, context = {}) {
   const metricType = event?.metricType;
   const queries = METRIC_QUERIES[metricType];
   if (!queries) {
     return event;
+  }
+  if (metricType === "ec2-ebs-summary") {
+    const inventory = event.discoveryInventory || {};
+    const coreHours = sumNumbers(resourcesFor(inventory, "ec2"), "vcpus") * collectionWindowHours(event);
+    const gp3GbMonth = resourcesFor(inventory, "ebs")
+      .filter((volume) => String(volume.volumeType || "gp3").toLowerCase() === "gp3")
+      .reduce((sum, volume) => sum + Number(volume.sizeGiB || 0), 0) * collectionWindowMonthFraction(event);
+    return { ...event, coreHours, gp3GbMonth };
+  }
+  if (metricType === "rds-summary") {
+    const inventory = event.discoveryInventory || {};
+    const services = inventory.services || {};
+    const databaseResources = [
+      ...resourcesFor(inventory, "rds"),
+      ...resourcesFor(inventory, "aurora")
+    ];
+    return {
+      ...event,
+      instanceHours: databaseResources.length * collectionWindowHours(event),
+      hasAurora: Number(services.aurora || 0) > 0
+    };
   }
   const region = event.regionCode || context.regionCode || process.env.AWS_REGION || "us-east-1";
   const end = new Date();
@@ -138,24 +181,18 @@ export async function enrichAwsMetricSummary(event, context = {}) {
 
   if (metricType === "lambda-summary") {
     const invocations = latestValue(payload, "invocations");
-    const durationMs = latestValue(payload, "durationMs");
-    return { ...event, invocations, gbSeconds: durationMs / 1000 };
+    const averageDurationMs = latestValue(payload, "durationMs");
+    const memoryGb = averageLambdaMemoryGb(event.discoveryInventory);
+    return { ...event, invocations, gbSeconds: (averageDurationMs * invocations * memoryGb) / 1000 };
   }
   if (metricType === "api-gateway-summary") {
     return { ...event, requests: latestValue(payload, "requests"), egressGb: 0 };
-  }
-  if (metricType === "ec2-ebs-summary") {
-    return { ...event, coreHours: latestValue(payload, "cpuUnits") / 100, gp3GbMonth: latestValue(payload, "gp3GbMonth") / 1000000 };
   }
   if (metricType === "dynamodb-summary") {
     return { ...event, readUnits: latestValue(payload, "readUnits"), writeUnits: latestValue(payload, "writeUnits") };
   }
   if (metricType === "cloudfront-summary") {
     return { ...event, requests: latestValue(payload, "requests"), egressGb: latestValue(payload, "egressGb") / (1024 ** 3) };
-  }
-  if (metricType === "rds-summary") {
-    const services = event.discoveryInventory?.services || {};
-    return { ...event, instanceHours: latestValue(payload, "cpuUnits") / 100, hasAurora: Number(services.aurora || 0) > 0 };
   }
   if (metricType === "queueing-summary") {
     return { ...event, sqsRequests: latestValue(payload, "sqsRequests"), snsPublishes: latestValue(payload, "snsPublishes") };
