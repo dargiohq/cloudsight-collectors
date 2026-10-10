@@ -4,7 +4,22 @@
     {
       "Sid": "TemporaryDiscoveryAndBillingTest",
       "Effect": "Allow",
-      "Action": ["lambda:ListFunctions", "dynamodb:ListTables", "rds:DescribeDBInstances", "rds:DescribeDBClusters", "sqs:ListQueues", "sns:ListTopics", "s3:ListAllMyBuckets", "cloudfront:ListDistributions", "cloudwatch:GetMetricData", "cloudwatch:ListMetrics", "ce:GetCostAndUsage"],
+      "Action": [
+        "ce:GetCostAndUsage",
+        "cloudfront:ListDistributions",
+        "cloudwatch:GetMetricData",
+        "cloudwatch:GetMetricStatistics",
+        "cloudwatch:ListMetrics",
+        "dynamodb:ListTables",
+        "ec2:DescribeInstances",
+        "ec2:DescribeVolumes",
+        "lambda:ListFunctions",
+        "rds:DescribeDBClusters",
+        "rds:DescribeDBInstances",
+        "s3:ListAllMyBuckets",
+        "sns:ListTopics",
+        "sqs:ListQueues"
+      ],
       "Resource": "*"
     },
     {
